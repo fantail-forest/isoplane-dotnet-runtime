@@ -4,6 +4,8 @@
 using System.Diagnostics;
 using System.Net.Security;
 using System.Security.Cryptography.X509Certificates;
+using System.Threading;
+using System.Threading.Tasks;
 using Microsoft.Win32.SafeHandles;
 using SafeNwHandle = Interop.SafeNwHandle;
 
@@ -11,15 +13,19 @@ namespace System.Net
 {
     internal static partial class CertificateValidationPal
     {
-        internal static SslPolicyErrors VerifyCertificateProperties(
+        // The Apple chain engine retrieves for itself, so the verification completes synchronously.
+        internal static ValueTask<SslPolicyErrors> VerifyCertificatePropertiesAsync<TIOAdapter>(
             SafeDeleteContext? _ /*securityContext*/,
             X509Chain chain,
             X509Certificate2 remoteCertificate,
             bool checkCertName,
             bool isServer,
-            string? hostName)
+            string? hostName,
+            CancellationToken cancellationToken)
+            where TIOAdapter : IReadWriteAdapter
         {
-            return CertificateValidation.BuildChainAndVerifyProperties(chain, remoteCertificate, checkCertName, isServer, hostName, Span<byte>.Empty);
+            return new ValueTask<SslPolicyErrors>(
+                CertificateValidation.BuildChainAndVerifyProperties(chain, remoteCertificate, checkCertName, isServer, hostName, Span<byte>.Empty));
         }
 
         private static X509Certificate2? GetRemoteCertificate(

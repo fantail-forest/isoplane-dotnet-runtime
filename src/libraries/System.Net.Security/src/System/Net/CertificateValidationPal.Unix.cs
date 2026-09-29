@@ -3,23 +3,55 @@
 
 using System.Diagnostics;
 using System.Net.Security;
+using System.Runtime.CompilerServices;
 using System.Security.Cryptography.X509Certificates;
+using System.Threading;
+using System.Threading.Tasks;
 using Microsoft.Win32.SafeHandles;
 
 namespace System.Net
 {
     internal static partial class CertificateValidationPal
     {
-        internal static SslPolicyErrors VerifyCertificateProperties(
+        /// <summary>
+        /// Builds the chain and checks the name. On the asynchronous adapter the chain's
+        /// retrievals are awaited; on the synchronous adapter the build is the synchronous one,
+        /// which on WASI retrieves nothing rather than blocking the guest's only thread.
+        /// </summary>
+        internal static ValueTask<SslPolicyErrors> VerifyCertificatePropertiesAsync<TIOAdapter>(
             SafeDeleteContext? _ /*securityContext*/,
             X509Chain chain,
             X509Certificate2 remoteCertificate,
             bool checkCertName,
             bool isServer,
-            string? hostName)
+            string? hostName,
+            CancellationToken cancellationToken)
+            where TIOAdapter : IReadWriteAdapter
         {
-            return CertificateValidation.BuildChainAndVerifyProperties(chain, remoteCertificate, checkCertName, isServer, hostName);
+            if (typeof(TIOAdapter) == typeof(SyncReadWriteAdapter))
+            {
+                return new ValueTask<SslPolicyErrors>(
+                    CertificateValidation.BuildChainAndVerifyProperties(chain, remoteCertificate, checkCertName, isServer, hostName));
+            }
+
+            return BuildChainAndVerifyPropertiesAsync(chain, remoteCertificate, checkCertName, hostName, cancellationToken);
         }
+
+        private static async ValueTask<SslPolicyErrors> BuildChainAndVerifyPropertiesAsync(
+            X509Chain chain,
+            X509Certificate2 remoteCertificate,
+            bool checkCertName,
+            string? hostName,
+            CancellationToken cancellationToken)
+        {
+            bool chainBuilt = await BuildChainAsync(chain, remoteCertificate, true, cancellationToken).ConfigureAwait(false);
+            return CertificateValidation.VerifyProperties(chainBuilt, remoteCertificate, checkCertName, hostName);
+        }
+
+        // X509Chain.BuildAsync is internal to System.Security.Cryptography, whose reference
+        // assembly this library compiles against; the accessor binds to it at load.
+        [UnsafeAccessor(UnsafeAccessorKind.Method, Name = "BuildAsync")]
+        private static extern ValueTask<bool> BuildChainAsync(X509Chain chain, X509Certificate2 certificate, bool throwOnException, CancellationToken cancellationToken);
 
         //
         // Extracts a remote certificate upon request.
