@@ -17,8 +17,9 @@ void* SystemNative_LoadLibrary(const char* filename)
 
 void* SystemNative_GetLoadLibraryError(void)
 {
-    assert_msg(false, "Not supported on WASI", 0);
-    return NULL;
+    // The caller borrows this buffer, matching dlerror ownership on Unix.
+    static char message[] = "Native library loading is not supported on WASI";
+    return message;
 }
 
 void* SystemNative_GetProcAddress(void* handle, const char* symbol)
