@@ -112,7 +112,7 @@ namespace System.Net.Http.Headers
         public static readonly KnownHeader XUACompatible = new("X-UA-Compatible");
         public static readonly KnownHeader XXssProtection = new("X-XSS-Protection", ["1; mode=block", "0", "1"]);
 
-#if TARGET_BROWSER || TARGET_WASI
+#if TARGET_BROWSER
         private static HttpHeaderParser? GetAltSvcHeaderParser() => null; // Allow for the AltSvcHeaderParser to be trimmed on Browser since Alt-Svc is only for SocketsHttpHandler, which isn't used on Browser.
 #else
         private static AltSvcHeaderParser? GetAltSvcHeaderParser() => AltSvcHeaderParser.Parser;
