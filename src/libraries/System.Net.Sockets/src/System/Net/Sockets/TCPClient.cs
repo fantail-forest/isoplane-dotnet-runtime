@@ -321,12 +321,10 @@ namespace System.Net.Sockets
         {
             get
             {
-                if (OperatingSystem.IsWasi()) throw new PlatformNotSupportedException(); // https://github.com/dotnet/runtime/issues/108151
                 return (int)Client.GetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReceiveTimeout)!;
             }
             set
             {
-                if (OperatingSystem.IsWasi()) throw new PlatformNotSupportedException(); // https://github.com/dotnet/runtime/issues/108151
                 Client.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReceiveTimeout, value);
             }
         }
@@ -336,12 +334,10 @@ namespace System.Net.Sockets
         {
             get
             {
-                if (OperatingSystem.IsWasi()) throw new PlatformNotSupportedException(); // https://github.com/dotnet/runtime/issues/108151
                 return (int)Client.GetSocketOption(SocketOptionLevel.Socket, SocketOptionName.SendTimeout)!;
             }
             set
             {
-                if (OperatingSystem.IsWasi()) throw new PlatformNotSupportedException(); // https://github.com/dotnet/runtime/issues/108151
                 Client.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.SendTimeout, value);
             }
         }
@@ -356,7 +352,6 @@ namespace System.Net.Sockets
             }
             set
             {
-                if (OperatingSystem.IsWasi()) throw new PlatformNotSupportedException(); // https://github.com/dotnet/runtime/issues/108151
                 Client.LingerState = value!;
             }
         }
