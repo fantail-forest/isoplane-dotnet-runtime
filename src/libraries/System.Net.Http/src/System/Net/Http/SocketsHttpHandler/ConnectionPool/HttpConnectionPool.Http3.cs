@@ -756,7 +756,7 @@ namespace System.Net.Http
 
                 if (!nextAuthorityPersist)
                 {
-#if !ILLUMOS && !SOLARIS
+#if !ILLUMOS && !SOLARIS && !TARGET_WASI
                     _poolManager.StartMonitoringNetworkChanges();
 #endif
                 }
