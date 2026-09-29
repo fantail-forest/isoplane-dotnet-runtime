@@ -323,9 +323,14 @@ namespace System.Security.Cryptography.X509Certificates
             // Do this here instead of a static field initializer so that
             // the static initializer isn't capable of throwing the "home directory not found"
             // exception.
-            s_userStoreRoot ??= PersistedFiles.GetUserFeatureDirectory(
-                X509Persistence.CryptographyFeatureName,
-                X509Persistence.X509StoresSubFeatureName);
+            // A WASI guest has no user profile to look up; its per-user
+            // stores live at the fixed path a profile would give and are
+            // empty unless a preopened directory supplies them.
+            s_userStoreRoot ??= OperatingSystem.IsWasi()
+                ? Path.Combine("/", ".dotnet", "corefx", X509Persistence.CryptographyFeatureName, X509Persistence.X509StoresSubFeatureName)
+                : PersistedFiles.GetUserFeatureDirectory(
+                    X509Persistence.CryptographyFeatureName,
+                    X509Persistence.X509StoresSubFeatureName);
 
             return Path.Combine(s_userStoreRoot, directoryName);
         }

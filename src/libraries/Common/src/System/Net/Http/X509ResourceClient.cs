@@ -150,6 +150,10 @@ namespace System.Net.Http
 
         private static Func<string, CancellationToken, bool, Task<byte[]?>>? CreateDownloadBytesFunc()
         {
+            // A chain's authority-information fetch would reach the network
+            // through wasi:http, which a guest here cannot import; chains
+            // build from the certificates supplied, as with no client.
+            if (OperatingSystem.IsWasi()) return null;
             try
             {
                 // Use reflection to access System.Net.Http:
