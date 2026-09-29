@@ -70,6 +70,7 @@
 
   <ItemGroup Condition="'$(TargetPlatformIdentifier)' == 'unix'">
     <Compile Include="System\Net\NameResolutionPal.Unix.cs" />
+    <Compile Include="System\Net\NameResolutionPal.Unix.Async.cs" />
     <Compile Include="$(CommonPath)System\Net\InteropIPAddressExtensions.Unix.cs"
              Link="Common\System\Net\InteropIPAddressExtensions.Unix.cs" />
     <Compile Include="$(CommonPath)System\Net\SocketAddressPal.Unix.cs"
@@ -108,7 +109,9 @@
     <Compile Include="$(CommonPath)Interop\Unix\System.Native\Interop.ErrNo.cs"
              Link="Common\Interop\Unix\System.Native\Interop.ErrNo.cs"/>
 
-    <Compile Include="System\Net\NameResolutionPal.Unix.cs" />
+    <Compile Include="System\Net\NameResolutionPal.Wasi.cs" />
+    <Compile Include="$(CommonPath)Interop\Wasi\System.Native\Interop.WasiNameLookup.cs"
+             Link="Common\Interop\Wasi\System.Native\Interop.WasiNameLookup.cs" />
     <Compile Include="$(CommonPath)System\Net\InteropIPAddressExtensions.Unix.cs"
              Link="Common\System\Net\InteropIPAddressExtensions.Unix.cs" />
     <Compile Include="$(CommonPath)System\Net\SocketAddressPal.Unix.cs"
@@ -121,10 +124,6 @@
              Link="Common\Interop\Unix\Interop.Libraries.cs" />
     <Compile Include="$(CommonPath)Interop\Unix\System.Native\Interop.Close.cs"
              Link="Common\Interop\Unix\System.Native\Interop.Close.cs" />
-    <Compile Include="$(CommonPath)Interop\Unix\System.Native\Interop.GetNameInfo.cs"
-             Link="Common\Interop\Unix\System.Native\Interop.GetNameInfo.cs" />
-    <Compile Include="$(CommonPath)Interop\Unix\System.Native\Interop.HostEntry.cs"
-             Link="Common\Interop\Unix\System.Native\Interop.HostEntries.cs" />
     <Compile Include="$(CommonPath)Interop\Unix\System.Native\Interop.IPAddress.cs"
              Link="Common\Interop\Unix\System.Native\Interop.IPAddress.cs" />
     <Compile Include="$(CommonPath)Interop\Unix\System.Native\Interop.Socket.cs"
@@ -146,6 +145,7 @@
     <ProjectReference Include="$(LibrariesProjectRoot)System.Security.Principal.Windows\src\System.Security.Principal.Windows.csproj" />
     <ProjectReference Include="$(LibrariesProjectRoot)System.Threading\src\System.Threading.csproj" />
     <ProjectReference Include="$(LibrariesProjectRoot)System.Threading.Overlapped\src\System.Threading.Overlapped.csproj" />
+    <ProjectReference Include="$(LibrariesProjectRoot)System.Threading.Thread\src\System.Threading.Thread.csproj" />
     <ProjectReference Include="$(LibrariesProjectRoot)System.Threading.ThreadPool\src\System.Threading.ThreadPool.csproj" />
   </ItemGroup>
 
