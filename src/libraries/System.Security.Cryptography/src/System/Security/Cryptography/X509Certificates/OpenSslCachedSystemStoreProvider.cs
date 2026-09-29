@@ -220,7 +220,7 @@ namespace System.Security.Cryptography.X509Certificates
                     return true;
                 }
 
-                using (SafeBioHandle fileBio = Interop.Crypto.BioNewFile(file, "rb"))
+                using (SafeBioHandle fileBio = OpenCertificateFile(file))
                 {
                     // The handle may be invalid, for example when we don't have read permission for the file.
                     if (fileBio.IsInvalid)
@@ -371,6 +371,45 @@ namespace System.Security.Cryptography.X509Certificates
 
         private static bool TryStatDirectory(string path, out DateTime lastModified)
             => TryStat(path, Interop.Sys.FileTypes.S_IFDIR, out lastModified, out _);
+
+        /// <summary>
+        /// The file as a BIO. A WASI guest's disk is served by the host through
+        /// immediate reads and the guest has no thread to wait on a stream, so it
+        /// reads the file whole rather than through OpenSSL's file BIO; an invalid
+        /// handle stands for a file that could not be read, as with the file BIO.
+        /// </summary>
+        private static SafeBioHandle OpenCertificateFile(string file)
+        {
+            if (!OperatingSystem.IsWasi())
+            {
+                return Interop.Crypto.BioNewFile(file, "rb");
+            }
+
+            byte[] contents;
+
+            try
+            {
+                contents = File.ReadAllBytes(file);
+            }
+            catch (IOException)
+            {
+                return new SafeBioHandle();
+            }
+            catch (UnauthorizedAccessException)
+            {
+                return new SafeBioHandle();
+            }
+
+            SafeBioHandle bio = Interop.Crypto.CreateMemoryBio();
+
+            if (bio.IsInvalid || Interop.Crypto.BioWrite(bio, contents, contents.Length) != contents.Length)
+            {
+                bio.Dispose();
+                return new SafeBioHandle();
+            }
+
+            return bio;
+        }
 
         private static bool TryStatFile(string path, out DateTime lastModified, out (long, long) fileId)
             => TryStat(path, Interop.Sys.FileTypes.S_IFREG, out lastModified, out fileId);
