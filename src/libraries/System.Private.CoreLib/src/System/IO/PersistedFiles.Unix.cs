@@ -54,6 +54,12 @@ namespace System.IO
             if (!string.IsNullOrEmpty(userHomeDirectory))
                 return userHomeDirectory;
 
+            // A WASI guest has no user database to consult: its per-user
+            // files live at the fixed path a profile at the root would give,
+            // and exist only where a preopened directory supplies them.
+            if (OperatingSystem.IsWasi())
+                return "/";
+
             // In initialization conditions, however, the "HOME" environment variable may
             // not yet be set. For such cases, consult with the password entry.
             unsafe
