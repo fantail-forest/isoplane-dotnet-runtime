@@ -18,11 +18,12 @@ namespace Internal.Cryptography
         private static readonly RandomNumberGenerator s_rng = RandomNumberGenerator.Create();
 #endif
 
+        // The wasi build carries the OpenSSL backend, so symmetric encryption
+        // is there as on any Unix.
         [UnsupportedOSPlatformGuard("browser")]
-        [UnsupportedOSPlatformGuard("wasi")]
         internal static bool HasSymmetricEncryption { get; } =
 #if NET
-            !OperatingSystem.IsBrowser() && !OperatingSystem.IsWasi();
+            !OperatingSystem.IsBrowser();
 #else
             true;
 #endif
@@ -45,10 +46,9 @@ namespace Internal.Cryptography
 #endif
 
         [UnsupportedOSPlatformGuard("browser")]
-        [UnsupportedOSPlatformGuard("wasi")]
         internal static bool HasMD5 { get; } =
 #if NET
-            !OperatingSystem.IsBrowser() && !OperatingSystem.IsWasi();
+            !OperatingSystem.IsBrowser();
 #else
             true;
 #endif

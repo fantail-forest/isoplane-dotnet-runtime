@@ -428,17 +428,8 @@ namespace System.Net.Http
                 base(originalContent)
             { }
 
-            protected override Stream GetDecompressedStream(Stream originalStream)
-            {
-                // System.IO.Compression.Brotli has no wasi target yet; the
-                // decoder's constructor would throw the same.
-                if (OperatingSystem.IsWasi())
-                {
-                    throw new PlatformNotSupportedException();
-                }
-
-                return new BrotliStream(originalStream, CompressionMode.Decompress);
-            }
+            protected override Stream GetDecompressedStream(Stream originalStream) =>
+                new BrotliStream(originalStream, CompressionMode.Decompress);
         }
     }
 }
