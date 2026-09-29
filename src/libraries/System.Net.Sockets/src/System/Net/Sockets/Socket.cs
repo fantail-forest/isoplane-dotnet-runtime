@@ -542,12 +542,10 @@ namespace System.Net.Sockets
         {
             get
             {
-                if (OperatingSystem.IsWasi()) throw new PlatformNotSupportedException(); // TODO remove with https://github.com/dotnet/runtime/pull/107185
                 return (int)GetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReceiveTimeout)!;
             }
             set
             {
-                if (OperatingSystem.IsWasi()) throw new PlatformNotSupportedException(); // TODO remove with https://github.com/dotnet/runtime/pull/107185
                 ArgumentOutOfRangeException.ThrowIfLessThan(value, -1);
                 if (value == -1)
                 {
@@ -562,13 +560,11 @@ namespace System.Net.Sockets
         {
             get
             {
-                if (OperatingSystem.IsWasi()) throw new PlatformNotSupportedException(); // TODO remove with https://github.com/dotnet/runtime/pull/107185
                 return (int)GetSocketOption(SocketOptionLevel.Socket, SocketOptionName.SendTimeout)!;
             }
 
             set
             {
-                if (OperatingSystem.IsWasi()) throw new PlatformNotSupportedException(); // TODO remove with https://github.com/dotnet/runtime/pull/107185
                 ArgumentOutOfRangeException.ThrowIfLessThan(value, -1);
                 if (value == -1)
                 {
@@ -590,7 +586,6 @@ namespace System.Net.Sockets
             }
             set
             {
-                if (OperatingSystem.IsWasi()) throw new PlatformNotSupportedException(); // TODO remove with https://github.com/dotnet/runtime/pull/107185
 
                 SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.Linger, value!);
             }
