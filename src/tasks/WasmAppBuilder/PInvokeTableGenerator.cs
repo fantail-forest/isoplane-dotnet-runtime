@@ -146,7 +146,7 @@ internal sealed class PInvokeTableGenerator
                 .Where(l => l.Module == module && !l.Skip)
                 .OrderBy(l => l.EntryPoint, StringComparer.Ordinal)
                 .GroupBy(d => d.EntryPoint, StringComparer.Ordinal)
-                .Select(l => $"{{\"{EscapeLiteral(l.Key)}\", {CEntryPoint(l.First())}}}, // {ListRefs(l)}{w.NewLine}    ")
+                .Select(l => $"{{\"{EscapeLiteral(l.Key)}\", {CEntryPoint(l.First())}, {SignatureLiteral(l.First())}}}, // {ListRefs(l)}{w.NewLine}    ")
                 .ToList();
 
             moduleImports[module] = imports;
@@ -154,7 +154,7 @@ internal sealed class PInvokeTableGenerator
                 $$"""
 
                 static PinvokeImport {{_fixupSymbolName(module)}}_imports [] = {
-                    {{string.Join("", imports)}}{NULL, NULL}
+                    {{string.Join("", imports)}}{NULL, NULL, NULL}
                 };
 
                 """);
@@ -184,6 +184,13 @@ internal sealed class PInvokeTableGenerator
                         .Any(c => !TryIsMethodGetParametersUnsupported(c.Method, out _) &&
                                     c.Method.GetParameters().Length != firstNumArgs);
         }
+    }
+
+    // The interpreter-to-native signature the runtime checks a later declaration against.
+    private string SignatureLiteral(PInvoke pinvoke)
+    {
+        string? signature = SignatureMapper.MethodToSignature(pinvoke.Method, Log);
+        return signature is null ? "NULL" : $"\"{signature}\"";
     }
 
     private string CEntryPoint(PInvoke pinvoke)

@@ -4148,6 +4148,11 @@ interp_transform_call (TransformData *td, MonoMethod *method, MonoMethod *target
 				interp_ins_set_sregs2 (td->last_ins, fp_sreg, MINT_CALL_ARGS_SREG);
 				td->last_ins->data [0] = get_data_item_index (td, (void *)csignature);
 			} else if (native) {
+#ifdef HOST_WASM
+				/* A signature without an interpreter-to-native bridge cannot be called on this runtime. */
+				if (!mono_wasm_has_interp_to_native_trampoline (csignature))
+					interp_generate_void_throw (td, MONO_JIT_ICALL_mono_throw_platform_not_supported);
+#endif
 				interp_add_ins (td, MINT_CALLI_NAT);
 
 				InterpMethod *imethod = NULL;
@@ -8598,7 +8603,18 @@ retry_emit:
 						interp_ins_set_dreg (td->last_ins, td->sp [-1].var);
 					} else {
 						/* push a pointer to a trampoline that calls m */
-						gpointer entry = mini_get_interp_callbacks ()->create_method_pointer (m, TRUE, error);
+						ERROR_DECL (pointer_error);
+						gpointer entry = mini_get_interp_callbacks ()->create_method_pointer (m, TRUE, pointer_error);
+						if (!is_ok (pointer_error)) {
+							/* No native-to-managed transition exists: fail where the pointer is taken, not where it is called. */
+							mono_interp_error_cleanup (pointer_error);
+							interp_generate_void_throw (td, MONO_JIT_ICALL_mono_throw_platform_not_supported);
+							interp_add_ins (td, MINT_LDNULL);
+							push_simple_type (td, STACK_TYPE_MP);
+							interp_ins_set_dreg (td->last_ins, td->sp [-1].var);
+							td->ip += 5;
+							break;
+						}
 #if SIZEOF_VOID_P == 8
 						interp_add_ins (td, MINT_LDC_I8);
 						WRITE64_INS (td->last_ins, 0, &entry);

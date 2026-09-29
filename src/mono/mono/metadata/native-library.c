@@ -193,6 +193,16 @@ pinvoke_probe_convert_status_to_error (MonoLookupPInvokeStatus *status, MonoErro
 /**
  * mono_lookup_pinvoke_call:
  */
+#ifdef HOST_WASM
+static MonoWasmPInvokeSignatureCheck pinvoke_signature_check;
+
+void
+mono_wasm_install_pinvoke_signature_check (MonoWasmPInvokeSignatureCheck check)
+{
+	pinvoke_signature_check = check;
+}
+#endif
+
 gpointer
 mono_lookup_pinvoke_call (MonoMethod *method, const char **exc_class, const char **exc_arg)
 {
@@ -933,6 +943,15 @@ retry_with_libcoreclr:
 		status_out->err_arg = g_strdup (new_import);
 		goto exit;
 	}
+#ifdef HOST_WASM
+	if (pinvoke_signature_check && !pinvoke_signature_check (method, addr)) {
+		/* No entry point with this declaration's signature exists. */
+		status_out->err_code = LOOKUP_PINVOKE_ERR_NO_SYM;
+		status_out->err_arg = g_strdup (new_import);
+		addr = NULL;
+		goto exit;
+	}
+#endif
 	piinfo->addr = addr;
 
 exit:

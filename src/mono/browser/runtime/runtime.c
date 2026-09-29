@@ -143,7 +143,9 @@ icall_table_lookup (MonoMethod *method, char *classname, char *methodname, char 
 		funcs = System_icall_funcs;
 	}
 #endif
-	assert (indexes);
+	/* Only the runtime's own images carry internal calls; a missing one is a MissingMethodException. */
+	if (!indexes)
+		return NULL;
 
 	void *p = bsearch (&token_idx, indexes, indexes_size, 4, compare_int);
 	if (!p) {
@@ -280,13 +282,26 @@ wasm_dl_symbol (void *handle, const char *name, char **err, void *user_data)
 	}
 #endif
 	PinvokeTable* index = (PinvokeTable*)handle;
-	PinvokeImport key = { name, NULL };
+	PinvokeImport key = { name, NULL, NULL };
     PinvokeImport* result = (PinvokeImport *)bsearch(&key, index->imports, index->count, sizeof(PinvokeImport), import_compare_name);
     if (!result) {
         // *err = g_strdup_printf ("Symbol not found: %s", name);
         return NULL;
     }
     return result->func;
+}
+
+/*
+ * A declaration binds a table entry only with the entry's own signature: a
+ * call through a differently typed pointer traps on wasm's typed indirect call.
+ */
+static int
+wasm_pinvoke_signature_check (void *method, void *addr)
+{
+	char declared [32];
+	if (!mono_wasm_signature_cookie (mono_method_signature ((MonoMethod *)method), declared, sizeof (declared)))
+		return 0;
+	return wasm_dl_pinvoke_signature_matches (addr, declared);
 }
 
 MonoDomain *
@@ -298,6 +313,7 @@ mono_wasm_load_runtime_common (int debug_level, MonoLogCallback log_callback, co
 
 	mono_dl_fallback_register (wasm_dl_load, wasm_dl_symbol, NULL, NULL);
 	mono_wasm_install_get_native_to_interp_tramp (get_native_to_interp);
+	mono_wasm_install_pinvoke_signature_check (wasm_pinvoke_signature_check);
 
 #ifdef GEN_PINVOKE
 	mono_wasm_install_interp_to_native_callback (mono_wasm_interp_to_native_callback);

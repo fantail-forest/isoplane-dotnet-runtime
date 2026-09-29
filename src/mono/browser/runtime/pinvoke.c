@@ -32,8 +32,22 @@ table_compare_name (const void *t1, const void *t2)
 void*
 wasm_dl_lookup_pinvoke_table (const char *name)
 {
-	PinvokeImport needle = { name, NULL };
+	PinvokeImport needle = { name, NULL, NULL };
 	return bsearch (&needle, pinvoke_tables, (sizeof (pinvoke_tables) / sizeof (PinvokeTable)), sizeof (PinvokeTable), table_compare_name);
+}
+
+int
+wasm_dl_pinvoke_signature_matches (void *func, const char *signature)
+{
+	for (int i = 0; i < sizeof (pinvoke_tables) / sizeof (PinvokeTable); ++i) {
+		for (int j = 0; j < pinvoke_tables [i].count; ++j) {
+			PinvokeImport *entry = &pinvoke_tables [i].imports [j];
+			/* An entry without a recorded signature cannot be checked. */
+			if (entry->func == func && (!entry->signature || !strcmp (entry->signature, signature)))
+				return 1;
+		}
+	}
+	return 0;
 }
 
 int
