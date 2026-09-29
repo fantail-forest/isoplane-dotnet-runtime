@@ -1490,6 +1490,8 @@ static int32_t ConvertSocketFlagsPlatformToPal(int platformFlags)
 }
 #endif // CMSG_SPACE
 
+static int WasiStreamErrno(int error);
+
 int32_t SystemNative_Receive(intptr_t socket, void* buffer, int32_t bufferLen, int32_t flags, int32_t* received)
 {
     if (buffer == NULL || bufferLen < 0 || received == NULL)
@@ -1515,7 +1517,7 @@ int32_t SystemNative_Receive(intptr_t socket, void* buffer, int32_t bufferLen, i
     }
 
     *received = 0;
-    return SystemNative_ConvertErrorPlatformToPal(errno);
+    return SystemNative_ConvertErrorPlatformToPal(WasiStreamErrno(errno));
 }
 
 int32_t SystemNative_ReceiveSocketError(intptr_t socket, MessageHeader* messageHeader)
@@ -1618,7 +1620,7 @@ int32_t SystemNative_ReceiveMessage(intptr_t socket, MessageHeader* messageHeade
     }
 
     *received = 0;
-    return SystemNative_ConvertErrorPlatformToPal(errno);
+    return SystemNative_ConvertErrorPlatformToPal(WasiStreamErrno(errno));
 }
 
 int32_t SystemNative_Send(intptr_t socket, void* buffer, int32_t bufferLen, int32_t flags, int32_t* sent)
@@ -1653,7 +1655,7 @@ int32_t SystemNative_Send(intptr_t socket, void* buffer, int32_t bufferLen, int3
     }
 
     *sent = 0;
-    return SystemNative_ConvertErrorPlatformToPal(errno);
+    return SystemNative_ConvertErrorPlatformToPal(WasiStreamErrno(errno));
 }
 
 int32_t SystemNative_SendMessage(intptr_t socket, MessageHeader* messageHeader, int32_t flags, int64_t* sent)
@@ -1699,7 +1701,7 @@ int32_t SystemNative_SendMessage(intptr_t socket, MessageHeader* messageHeader, 
     }
 
     *sent = 0;
-    return SystemNative_ConvertErrorPlatformToPal(errno);
+    return SystemNative_ConvertErrorPlatformToPal(WasiStreamErrno(errno));
 }
 
 int32_t SystemNative_Accept(intptr_t socket, uint8_t* socketAddress, int32_t* socketAddressLen, intptr_t* acceptedSocket)
@@ -3441,6 +3443,73 @@ static WasiPollCapture g_wasiPollCapture;
 
 extern void __real_poll_poll(poll_list_borrow_pollable_t* list, wasip2_list_u32_t* ready);
 
+// libc turns every failed stream read or write into EIO and drops the error
+// record; a wrapped read or write asks the host for the record's network
+// error code first (wasi:sockets/network.network-error-code), and the PAL's
+// receive and send report that code's errno in place of EIO.
+__attribute__((import_module("wasi:sockets/network@0.2.0"), import_name("network-error-code")))
+extern void __wasm_import_network_network_error_code(int32_t error, int32_t result);
+extern int __wasi_sockets_utils__map_error(network_error_code_t error);
+extern bool __real_streams_method_input_stream_read(streams_borrow_input_stream_t self, uint64_t len, wasip2_list_u8_t* ret, streams_stream_error_t* err);
+extern bool __real_streams_method_output_stream_check_write(streams_borrow_output_stream_t self, uint64_t* ret, streams_stream_error_t* err);
+extern bool __real_streams_method_output_stream_write(streams_borrow_output_stream_t self, wasip2_list_u8_t* contents, streams_stream_error_t* err);
+
+static int g_wasiStreamErrno;
+
+static void RecordWasiStreamError(const streams_stream_error_t* error)
+{
+    if (error->tag != STREAMS_STREAM_ERROR_LAST_OPERATION_FAILED)
+    {
+        return;
+    }
+    uint8_t code[2] = { 0, 0 };
+    __wasm_import_network_network_error_code(error->val.last_operation_failed.__handle, (int32_t)(uintptr_t)code);
+    // A failure the host cannot name keeps libc's EIO.
+    if (code[0] != 0 && code[1] != 0)
+    {
+        g_wasiStreamErrno = __wasi_sockets_utils__map_error(code[1]);
+    }
+}
+
+bool __wrap_streams_method_input_stream_read(streams_borrow_input_stream_t self, uint64_t len, wasip2_list_u8_t* ret, streams_stream_error_t* err)
+{
+    bool ok = __real_streams_method_input_stream_read(self, len, ret, err);
+    if (!ok)
+    {
+        RecordWasiStreamError(err);
+    }
+    return ok;
+}
+
+bool __wrap_streams_method_output_stream_check_write(streams_borrow_output_stream_t self, uint64_t* ret, streams_stream_error_t* err)
+{
+    bool ok = __real_streams_method_output_stream_check_write(self, ret, err);
+    if (!ok)
+    {
+        RecordWasiStreamError(err);
+    }
+    return ok;
+}
+
+bool __wrap_streams_method_output_stream_write(streams_borrow_output_stream_t self, wasip2_list_u8_t* contents, streams_stream_error_t* err)
+{
+    bool ok = __real_streams_method_output_stream_write(self, contents, err);
+    if (!ok)
+    {
+        RecordWasiStreamError(err);
+    }
+    return ok;
+}
+
+// The errno a failed receive or send reports: the recorded network error
+// when libc reported the generic EIO, else errno itself.
+static int WasiStreamErrno(int error)
+{
+    int recorded = g_wasiStreamErrno;
+    g_wasiStreamErrno = 0;
+    return error == EIO && recorded != 0 ? recorded : error;
+}
+
 void __wrap_poll_poll(poll_list_borrow_pollable_t* list, wasip2_list_u32_t* ready)
 {
     if (!g_wasiPollCapture.active)
@@ -3608,6 +3677,11 @@ void SystemNative_WasiResolveAddressesDrop(int32_t stream)
     ip_name_lookup_resolve_address_stream_drop_own((ip_name_lookup_own_resolve_address_stream_t){ stream });
 }
 #else
+static int WasiStreamErrno(int error)
+{
+    return error;
+}
+
 int32_t SystemNative_GetWasiSocketReadiness(intptr_t socket, uint32_t* handles, int32_t capacity, int32_t* count, int32_t* events)
 {
     (void)socket;

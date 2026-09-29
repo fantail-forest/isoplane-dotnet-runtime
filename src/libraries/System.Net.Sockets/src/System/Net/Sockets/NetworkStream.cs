@@ -118,7 +118,6 @@ namespace System.Net.Sockets
         {
             get
             {
-                if (OperatingSystem.IsWasi()) throw new PlatformNotSupportedException(); // https://github.com/dotnet/runtime/issues/108151
 
                 int timeout = (int)_streamSocket.GetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReceiveTimeout)!;
                 if (timeout == 0)
@@ -129,7 +128,6 @@ namespace System.Net.Sockets
             }
             set
             {
-                if (OperatingSystem.IsWasi()) throw new PlatformNotSupportedException(); // https://github.com/dotnet/runtime/issues/108151
 
                 if (value <= 0 && value != System.Threading.Timeout.Infinite)
                 {
@@ -145,7 +143,6 @@ namespace System.Net.Sockets
         {
             get
             {
-                if (OperatingSystem.IsWasi()) throw new PlatformNotSupportedException(); // https://github.com/dotnet/runtime/issues/108151
 
                 int timeout = (int)_streamSocket.GetSocketOption(SocketOptionLevel.Socket, SocketOptionName.SendTimeout)!;
                 if (timeout == 0)
@@ -156,7 +153,6 @@ namespace System.Net.Sockets
             }
             set
             {
-                if (OperatingSystem.IsWasi()) throw new PlatformNotSupportedException(); // https://github.com/dotnet/runtime/issues/108151
 
                 if (value <= 0 && value != System.Threading.Timeout.Infinite)
                 {
@@ -685,7 +681,6 @@ namespace System.Net.Sockets
         private int _currentWriteTimeout = -1;
         internal void SetSocketTimeoutOption(SocketShutdown mode, int timeout, bool silent)
         {
-            if (OperatingSystem.IsWasi()) throw new PlatformNotSupportedException(); // https://github.com/dotnet/runtime/issues/108151
 
             if (timeout < 0)
             {
