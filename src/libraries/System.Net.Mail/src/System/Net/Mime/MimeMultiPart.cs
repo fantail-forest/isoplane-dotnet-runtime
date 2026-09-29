@@ -44,7 +44,7 @@ namespace System.Net.Mime
         {
             PrepareHeaders(allowUnicode);
             writer.WriteHeaders(Headers, allowUnicode);
-            Stream outputStream = writer.GetContentStream();
+            Stream outputStream = await writer.GetContentStreamAsync<TIOAdapter>(cancellationToken).ConfigureAwait(false);
             MimeWriter mimeWriter = new MimeWriter(outputStream, ContentType.Boundary!);
 
             foreach (MimeBasePart part in Parts)
@@ -52,8 +52,8 @@ namespace System.Net.Mime
                 await part.SendAsync<TIOAdapter>(mimeWriter, allowUnicode, cancellationToken).ConfigureAwait(false);
             }
 
-            mimeWriter.Close();
-            outputStream.Close();
+            await mimeWriter.CloseAsync<TIOAdapter>(cancellationToken).ConfigureAwait(false);
+            await DelegatedStream.CloseStreamAsync<TIOAdapter>(outputStream, cancellationToken).ConfigureAwait(false);
         }
 
         internal static string GetNextBoundary()

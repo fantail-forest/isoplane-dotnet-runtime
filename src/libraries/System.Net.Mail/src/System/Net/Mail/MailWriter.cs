@@ -4,6 +4,8 @@
 using System;
 using System.Collections.Specialized;
 using System.IO;
+using System.Threading.Tasks;
+using System.Threading;
 using System.Net.Mime;
 
 namespace System.Net.Mail
@@ -37,6 +39,19 @@ namespace System.Net.Mail
         /// <summary>
         /// Closes underlying stream.
         /// </summary>
+        internal override async Task CloseAsync<TIOAdapter>(CancellationToken cancellationToken)
+        {
+            _bufferBuilder.Append("\r\n"u8);
+            await FlushAsync<TIOAdapter>(cancellationToken).ConfigureAwait(false);
+            await DelegatedStream.CloseStreamAsync<TIOAdapter>(_stream, cancellationToken).ConfigureAwait(false);
+        }
+
+        protected override async ValueTask OnCloseAsync(object sender, CancellationToken cancellationToken)
+        {
+            await _contentStream.FlushAsync(cancellationToken).ConfigureAwait(false);
+            _contentStream = null!;
+        }
+
         internal override void Close()
         {
             _bufferBuilder.Append("\r\n"u8);

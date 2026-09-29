@@ -84,9 +84,9 @@ namespace System.Net.Mail
             _stream = _tcpClient.GetStream();
         }
 
-        internal async Task InitializeConnectionAsync(string host, int port)
+        internal async Task InitializeConnectionAsync(string host, int port, CancellationToken cancellationToken = default)
         {
-            await _tcpClient!.ConnectAsync(host, port).ConfigureAwait(false);
+            await _tcpClient!.ConnectAsync(host, port, cancellationToken).ConfigureAwait(false);
             _stream = _tcpClient.GetStream();
         }
 
@@ -103,7 +103,7 @@ namespace System.Net.Mail
             // Initialize the connection
             if (isAsync)
             {
-                await InitializeConnectionAsync(host, port).ConfigureAwait(false);
+                await InitializeConnectionAsync(host, port, cancellationToken).ConfigureAwait(false);
             }
             else
             {
@@ -113,7 +113,8 @@ namespace System.Net.Mail
             _responseReader = new SmtpReplyReaderFactory(_stream!);
 
             // Read the initial greeting
-            LineInfo info = await _responseReader.GetNextReplyReader().ReadLineAsync<TIOAdapter>(cancellationToken).ConfigureAwait(false);
+            SmtpReplyReader reader = await _responseReader.GetNextReplyReaderAsync<TIOAdapter>(cancellationToken).ConfigureAwait(false);
+            LineInfo info = await reader.ReadLineAsync<TIOAdapter>(cancellationToken).ConfigureAwait(false);
 
             switch (info.StatusCode)
             {
@@ -262,9 +263,10 @@ namespace System.Net.Mail
                                     // interpreted correctly by the server if it's in the middle of a
                                     // DATA command or some similar situation.  This may send a RST
                                     // but this is ok in this situation.  Do not reuse this connection
-                                    _tcpClient.LingerState = new LingerOption(true, 0);
+                                    if (!OperatingSystem.IsWasi())
+                                        _tcpClient.LingerState = new LingerOption(true, 0);
                                 }
-                                else
+                                else if (!OperatingSystem.IsWasi())
                                 {
                                     // Gracefully close the transmission channel
                                     _tcpClient.Client.Blocking = false;
@@ -296,6 +298,47 @@ namespace System.Net.Mail
             _isConnected = false;
         }
 
+        internal async Task ReleaseConnectionAsync(CancellationToken cancellationToken)
+        {
+            TcpClient? client;
+            Stream? stream;
+            lock (this)
+            {
+                if (_isClosed)
+                    return;
+                _isConnected = false;
+                client = _tcpClient;
+                stream = _stream;
+            }
+            if (client == null)
+                return;
+            try
+            {
+                await QuitCommand.SendAsync<AsyncReadWriteAdapter>(this, cancellationToken).ConfigureAwait(false);
+            }
+            catch (IOException)
+            {
+                // QUIT is best effort after the server acknowledged DATA.
+            }
+            catch (ObjectDisposedException)
+            {
+                // A concurrent abort may already have released the transport.
+            }
+            finally
+            {
+                lock (this)
+                    _isClosed = true;
+                try
+                {
+                    stream?.Dispose();
+                }
+                finally
+                {
+                    client.Dispose();
+                }
+            }
+        }
+
         internal void ReleaseConnection()
         {
             ShutdownConnection(false);
@@ -313,9 +356,15 @@ namespace System.Net.Mail
 
         internal Stream GetClosableStream()
         {
-            ClosableStream cs = new ClosableStream(_stream!, _onCloseHandler);
+            ClosableStream cs = new ClosableStream(_stream!, _onCloseHandler, OnCloseAsync);
             _isStreamOpen = true;
             return cs;
+        }
+
+        private async ValueTask OnCloseAsync(object sender, CancellationToken cancellationToken)
+        {
+            _isStreamOpen = false;
+            await DataStopCommand.SendAsync<AsyncReadWriteAdapter>(this, cancellationToken).ConfigureAwait(false);
         }
 
         private void OnClose(object? sender, EventArgs args)
