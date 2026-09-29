@@ -770,6 +770,27 @@ namespace System.Net.Sockets
         public static bool TryCompleteReceiveFrom(SafeSocketHandle socket, IList<ArraySegment<byte>> buffers, SocketFlags flags, Span<byte> socketAddress, out int socketAddressLen, out int bytesReceived, out SocketFlags receivedFlags, out SocketError errorCode) =>
             TryCompleteReceiveFrom(socket, default(Span<byte>), buffers, flags, socketAddress, out socketAddressLen, out bytesReceived, out receivedFlags, out errorCode);
 
+        // wasi-libc's recv has no MSG_PEEK, so readiness stands for the
+        // zero-byte read: a readable socket (data, or the peer's close)
+        // completes it, and one that is not readable yet reports EAGAIN so the
+        // operation queues and completes on its readiness event.
+        private static int SysZeroByteReceive(SafeSocketHandle socket, out Interop.Error errno)
+        {
+            errno = Interop.Sys.Poll(socket, Interop.PollEvents.POLLIN, 0, out Interop.PollEvents triggered);
+            if (errno != Interop.Error.SUCCESS)
+            {
+                return -1;
+            }
+
+            if (triggered == Interop.PollEvents.POLLNONE)
+            {
+                errno = Interop.Error.EAGAIN;
+                return -1;
+            }
+
+            return 0;
+        }
+
         public static unsafe bool TryCompleteReceive(SafeSocketHandle socket, Span<byte> buffer, SocketFlags flags, out int bytesReceived, out SocketError errorCode)
         {
             try
@@ -781,6 +802,10 @@ namespace System.Net.Sockets
                 {
                     Debug.Assert(flags == SocketFlags.None);
                     received = SysRead(socket, buffer, out errno);
+                }
+                else if (buffer.Length == 0 && OperatingSystem.IsWasi())
+                {
+                    received = SysZeroByteReceive(socket, out errno);
                 }
                 else if (buffer.Length == 0)
                 {
@@ -849,6 +874,12 @@ namespace System.Net.Sockets
                 {
                     // Receive into a set of buffers
                     received = SysReceive(socket, flags, buffers, socketAddress, out receivedSocketAddressLength, out receivedFlags, out errno);
+                }
+                else if (buffer.Length == 0 && OperatingSystem.IsWasi())
+                {
+                    received = SysZeroByteReceive(socket, out errno);
+                    receivedSocketAddressLength = 0;
+                    receivedFlags = SocketFlags.None;
                 }
                 else if (buffer.Length == 0)
                 {
