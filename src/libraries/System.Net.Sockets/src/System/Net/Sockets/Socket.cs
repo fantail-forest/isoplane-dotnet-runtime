@@ -69,8 +69,10 @@ namespace System.Net.Sockets
         private int _closeTimeout = Socket.DefaultCloseTimeout;
         private bool _disposed;
 
+        // An IPv6 socket reaches IPv4 peers only in dual mode; where the OS
+        // offers none (wasi), the family-agnostic socket is an IPv4 one.
         public Socket(SocketType socketType, ProtocolType protocolType)
-            : this(OSSupportsIPv6 ? AddressFamily.InterNetworkV6 : AddressFamily.InterNetwork, socketType, protocolType)
+            : this(OSSupportsIPv6DualMode ? AddressFamily.InterNetworkV6 : AddressFamily.InterNetwork, socketType, protocolType)
         {
             if (OSSupportsIPv6DualMode)
             {
