@@ -775,6 +775,8 @@
       RuntimeIcallTableFile="$(_WasmRuntimeICallTablePath)"
       IcallOutputPath="$(_WasmICallTablePath)"
       PInvokeModules="@(_WasmPInvokeModules)"
+      PInvokeSymbolInventoryFile="$(WasmPInvokeSymbolInventoryFile)"
+      RequirePInvokeSymbolInventory="$(WasmRequirePInvokeSymbolInventory)"
       PInvokeOutputPath="$(_WasmPInvokeTablePath)"
       InterpToNativeOutputPath="$(_WasmInterpToNativeTablePath)"
       CacheFilePath="$(_WasmM2NCachePath)"
