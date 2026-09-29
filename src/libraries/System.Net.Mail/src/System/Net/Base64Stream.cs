@@ -66,6 +66,14 @@ namespace System.Net
             }
         }
 
+        internal override async ValueTask CloseAsync(CancellationToken cancellationToken)
+        {
+            if (_writeState != null && WriteState.Length > 0)
+                _encoder.AppendPadding();
+            await FlushInternalAsync(cancellationToken).ConfigureAwait(false);
+            await base.CloseAsync(cancellationToken).ConfigureAwait(false);
+        }
+
         public override void Close()
         {
             if (_writeState != null && WriteState.Length > 0)

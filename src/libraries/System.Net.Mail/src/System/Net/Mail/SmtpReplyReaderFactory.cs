@@ -80,6 +80,17 @@ namespace System.Net.Mail
             return _currentReader;
         }
 
+        internal async ValueTask<SmtpReplyReader> GetNextReplyReaderAsync<TIOAdapter>(CancellationToken cancellationToken)
+            where TIOAdapter : IReadWriteAdapter
+        {
+            if (_currentReader != null && _readState != ReadState.Done)
+                await ReadLinesAsync<TIOAdapter>(_currentReader, cancellationToken: cancellationToken).ConfigureAwait(false);
+
+            _readState = ReadState.Status0;
+            _currentReader = new SmtpReplyReader(this);
+            return _currentReader;
+        }
+
         private int ProcessRead(ReadOnlySpan<byte> buffer, bool readLine)
         {
             // if 0 bytes were read,there was a failure

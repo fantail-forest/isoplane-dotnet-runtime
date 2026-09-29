@@ -114,7 +114,9 @@ namespace System.Net.Mail
                 // machine connecting to public server).
 
                 // SMTP RFC's require ASCII only host names in the HELO/EHLO message.
-                string clientDomainRaw = IPGlobalProperties.GetIPGlobalProperties().HostName;
+                string clientDomainRaw = OperatingSystem.IsWasi()
+                    ? Dns.GetHostName()
+                    : IPGlobalProperties.GetIPGlobalProperties().HostName;
 
                 IdnMapping mapping = new IdnMapping();
                 try
@@ -523,7 +525,12 @@ namespace System.Net.Mail
                 }
                 synchronous = false;
                 await message.SendAsync<TIOAdapter>(writer, DeliveryMethod != SmtpDeliveryMethod.Network, allowUnicode, cancellationToken).ConfigureAwait(false);
-                writer.Close();
+                await writer.CloseAsync<TIOAdapter>(cancellationToken).ConfigureAwait(false);
+                if (OperatingSystem.IsWasi() && DeliveryMethod == SmtpDeliveryMethod.Network)
+                {
+                    // Dispose cannot await network I/O on WASI; finish the SMTP session before returning.
+                    await _transport.ReleaseConnectionAsync(cancellationToken).ConfigureAwait(false);
+                }
 
                 //throw if we couldn't send to any of the recipients
                 if (failedRecipientExceptions != null)

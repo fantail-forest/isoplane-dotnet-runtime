@@ -19,7 +19,8 @@ namespace System.Net.Mail
             where TIOAdapter : IReadWriteAdapter
         {
             await conn.FlushAsync<TIOAdapter>(cancellationToken).ConfigureAwait(false);
-            return await conn.Reader!.GetNextReplyReader().ReadLineAsync<TIOAdapter>(cancellationToken).ConfigureAwait(false);
+            SmtpReplyReader reader = await conn.Reader!.GetNextReplyReaderAsync<TIOAdapter>(cancellationToken).ConfigureAwait(false);
+            return await reader.ReadLineAsync<TIOAdapter>(cancellationToken).ConfigureAwait(false);
         }
     }
 
@@ -29,7 +30,8 @@ namespace System.Net.Mail
             where TIOAdapter : IReadWriteAdapter
         {
             await conn.FlushAsync<TIOAdapter>(cancellationToken).ConfigureAwait(false);
-            return await conn.Reader!.GetNextReplyReader().ReadLinesAsync<TIOAdapter>(cancellationToken).ConfigureAwait(false);
+            SmtpReplyReader reader = await conn.Reader!.GetNextReplyReaderAsync<TIOAdapter>(cancellationToken).ConfigureAwait(false);
+            return await reader.ReadLinesAsync<TIOAdapter>(cancellationToken).ConfigureAwait(false);
         }
     }
 

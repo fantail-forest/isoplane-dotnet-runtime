@@ -75,6 +75,22 @@ namespace System.Net
             TaskToAsyncResult.End(asyncResult);
         }
 
+        internal virtual ValueTask CloseAsync(CancellationToken cancellationToken) =>
+            CloseStreamAsync<AsyncReadWriteAdapter>(_stream, cancellationToken);
+
+        internal static ValueTask CloseStreamAsync<TIOAdapter>(Stream stream, CancellationToken cancellationToken)
+            where TIOAdapter : IReadWriteAdapter
+        {
+            if (typeof(TIOAdapter) == typeof(SyncReadWriteAdapter))
+            {
+                stream.Close();
+                return default;
+            }
+            return stream is DelegatedStream delegated
+                ? delegated.CloseAsync(cancellationToken)
+                : stream.DisposeAsync();
+        }
+
         public override void Close()
         {
             _stream.Close();
