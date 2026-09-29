@@ -19,19 +19,16 @@ namespace System.Net.Sockets
         internal const bool InlineSocketCompletionsEnabled = true;
         private static readonly SocketAsyncEngine s_engine = new SocketAsyncEngine();
 
+        // A socket contributes at most its own pollable while connecting or
+        // listening, or an input and an output pollable once connected.
+        private const int MaxPollablesPerSocket = 4;
+
         public static bool TryRegisterSocket(IntPtr socketHandle, SocketAsyncContext context, out SocketAsyncEngine? engine, out Interop.Error error)
         {
             engine = s_engine;
 
-            nint entryPtr = default;
-            error = Interop.Sys.GetWasiSocketDescriptor(socketHandle, &entryPtr);
-            if (error != Interop.Error.SUCCESS)
-            {
-                return false;
-            }
-
             RegisterWasiPollHook(context, BeforePollHook, HandleSocketEvent, context.unregisterPollHook.Token);
-
+            error = Interop.Error.SUCCESS;
             return true;
         }
 
@@ -40,9 +37,9 @@ namespace System.Net.Sockets
             context.unregisterPollHook.Cancel();
         }
 
-        // this method is invading private implementation details of wasi-libc
-        // we could get rid of it when https://github.com/WebAssembly/wasi-libc/issues/542 is resolved
-        // or after WASIp3 promises are implemented, whatever comes first
+        // Asks libc which pollables stand for this socket's readiness, and
+        // dispatches immediately for a socket libc already reports as ready
+        // (a failed connection), which has no pollable to wait on.
         public static IList<int> BeforePollHook(object? state)
         {
             var context = (SocketAsyncContext)state!;
@@ -51,78 +48,30 @@ namespace System.Net.Sockets
                 return [];
             }
 
-            List<int> pollableHandles = new();
-            // fail fast if the handle is not found in the descriptor table
-            // probably because the socket was closed and the entry was removed, without unregistering the poll hook
-            nint entryPtr = default;
+            uint* handles = stackalloc uint[MaxPollablesPerSocket];
+            int count;
+            Sys.SocketEvents events;
             IntPtr socketHandle = context._socket.DangerousGetHandle();
-            var error = Interop.Sys.GetWasiSocketDescriptor(socketHandle, &entryPtr);
+            Interop.Error error = Interop.Sys.GetWasiSocketReadiness(socketHandle, handles, MaxPollablesPerSocket, &count, &events);
+            if (error == Interop.Error.EBADF)
+            {
+                // closed between the IsClosed check and the query, or never a socket
+                return [];
+            }
             if (error != Interop.Error.SUCCESS)
             {
-                Environment.FailFast("Can't resolve libc descriptor for socket handle " + socketHandle);
+                Environment.FailFast("Can't determine readiness of socket handle " + socketHandle + ": " + error);
             }
 
-            var entry = (descriptor_table_entry_t*)entryPtr;
-            switch (entry->tag)
+            if (events != Sys.SocketEvents.None)
             {
-                case descriptor_table_entry_tag.DESCRIPTOR_TABLE_ENTRY_TCP_SOCKET:
-                {
-                    tcp_socket_t* socket = &(entry->entry.tcp_socket);
-                    switch (socket->state.tag)
-                    {
-                        case tcp_socket_state_tag.TCP_SOCKET_STATE_CONNECTING:
-                        case tcp_socket_state_tag.TCP_SOCKET_STATE_LISTENING:
-                            pollableHandles.Add(socket->socket_pollable.handle);
-                            break;
-                        case tcp_socket_state_tag.TCP_SOCKET_STATE_CONNECTED:
-                            pollableHandles.Add(socket->state.state.connected.input_pollable.handle);
-                            pollableHandles.Add(socket->state.state.connected.output_pollable.handle);
-                            break;
-                        case tcp_socket_state_tag.TCP_SOCKET_STATE_CONNECT_FAILED:
-                            context.HandleEventsInline(Sys.SocketEvents.Error);
-                            break;
-                        case tcp_socket_state_tag.TCP_SOCKET_STATE_UNBOUND:
-                        case tcp_socket_state_tag.TCP_SOCKET_STATE_BOUND:
-                            break;
-                        default:
-                            throw new NotImplementedException("TCP:" + socket->state.tag);
-                    }
-                    break;
-                }
-                case descriptor_table_entry_tag.DESCRIPTOR_TABLE_ENTRY_UDP_SOCKET:
-                {
-                    udp_socket_t* socket = &(entry->entry.udp_socket);
-                    switch (socket->state.tag)
-                    {
-                        case udp_socket_state_tag.UDP_SOCKET_STATE_UNBOUND:
-                        case udp_socket_state_tag.UDP_SOCKET_STATE_BOUND_NOSTREAMS:
-                            // TODO ? pollableHandles.Add(socket->socket_pollable.handle);
-                            context.HandleEventsInline(Sys.SocketEvents.Read | Sys.SocketEvents.Write);
-                            break;
-                        case udp_socket_state_tag.UDP_SOCKET_STATE_BOUND_STREAMING:
-                        case udp_socket_state_tag.UDP_SOCKET_STATE_CONNECTED:
-                        {
-                            udp_socket_streams_t* streams;
-                            if (socket->state.tag == udp_socket_state_tag.UDP_SOCKET_STATE_BOUND_STREAMING)
-                            {
-                                streams = &(socket->state.state.bound_streaming.streams);
-                            }
-                            else
-                            {
-                                streams = &(socket->state.state.connected.streams);
-                            }
-                            pollableHandles.Add(streams->incoming_pollable.handle);
-                            pollableHandles.Add(streams->outgoing_pollable.handle);
-                            break;
-                        }
+                context.HandleEventsInline(events);
+            }
 
-                        default:
-                            throw new NotImplementedException("UDP" + socket->state.tag);
-                    }
-                    break;
-                }
-                default:
-                    throw new NotImplementedException("TYPE" + entry->tag);
+            var pollableHandles = new List<int>(count);
+            for (int i = 0; i < count; i++)
+            {
+                pollableHandles.Add((int)handles[i]);
             }
             return pollableHandles;
         }

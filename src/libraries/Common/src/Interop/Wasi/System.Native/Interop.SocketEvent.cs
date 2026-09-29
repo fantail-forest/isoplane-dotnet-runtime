@@ -19,7 +19,12 @@ internal static partial class Interop
             Error = 0x10
         }
 
-        [LibraryImport(Libraries.SystemNative, EntryPoint = "SystemNative_GetWasiSocketDescriptor")]
-        internal static unsafe partial Error GetWasiSocketDescriptor(IntPtr socket, IntPtr* entry);
+        /// <summary>
+        /// The wasi:io/poll pollables that stand for a socket's readiness, and
+        /// the events libc reports as ready already (which have no pollable).
+        /// Fails with EBADF when the handle is not an open socket.
+        /// </summary>
+        [LibraryImport(Libraries.SystemNative, EntryPoint = "SystemNative_GetWasiSocketReadiness")]
+        internal static unsafe partial Error GetWasiSocketReadiness(IntPtr socket, uint* handles, int capacity, int* count, SocketEvents* events);
     }
 }

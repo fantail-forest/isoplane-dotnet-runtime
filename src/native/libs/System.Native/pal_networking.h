@@ -404,7 +404,10 @@ PALEXPORT int32_t SystemNative_GetAtOutOfBandMark(intptr_t socket, int32_t* avai
 
 PALEXPORT int32_t SystemNative_GetBytesAvailable(intptr_t socket, int32_t* available);
 
-PALEXPORT int32_t SystemNative_GetWasiSocketDescriptor(intptr_t socket, void** entry);
+PALEXPORT int32_t SystemNative_GetWasiSocketReadiness(intptr_t socket, uint32_t* handles, int32_t capacity, int32_t* count, int32_t* events);
+PALEXPORT int32_t SystemNative_WasiResolveAddressesStart(const uint8_t* name, int32_t length, int32_t* stream, int32_t* pollable);
+PALEXPORT int32_t SystemNative_WasiResolveNextAddress(int32_t stream, uint8_t* bytes, int32_t capacity);
+PALEXPORT void SystemNative_WasiResolveAddressesDrop(int32_t stream);
 
 PALEXPORT int32_t SystemNative_CreateSocketEventPort(intptr_t* port);
 
