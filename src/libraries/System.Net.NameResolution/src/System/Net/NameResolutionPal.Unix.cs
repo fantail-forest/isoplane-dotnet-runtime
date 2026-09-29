@@ -14,16 +14,6 @@ namespace System.Net
 {
     internal static partial class NameResolutionPal
     {
-        public const bool SupportsGetAddrInfoAsync = false;
-
-        [UnsupportedOSPlatformGuard("wasi")]
-        public static bool SupportsGetNameInfo => !OperatingSystem.IsWasi();
-
-#pragma warning disable IDE0060
-        internal static Task? GetAddrInfoAsync(string hostName, bool justAddresses, AddressFamily family, CancellationToken cancellationToken) =>
-            throw new NotSupportedException();
-#pragma warning restore IDE0060
-
         private static SocketError GetSocketErrorForNativeError(int error)
         {
             switch (error)

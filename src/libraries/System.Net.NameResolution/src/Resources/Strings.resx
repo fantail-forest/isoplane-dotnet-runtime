@@ -75,4 +75,7 @@
   <data name="SystemNetNameResolution_PlatformNotSupported" xml:space="preserve">
     <value>System.Net.NameResolution is not supported on this platform.</value>
   </data>
+  <data name="net_wasi_sync_name_resolution" xml:space="preserve">
+    <value>Synchronous name resolution is not supported on this platform; use the asynchronous Dns methods.</value>
+  </data>
 </root>
