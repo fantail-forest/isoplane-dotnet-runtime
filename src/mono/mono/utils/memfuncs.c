@@ -250,10 +250,17 @@ mono_gc_memmove_atomic (void *dest, const void *src, size_t size)
 
 #define _DEFAULT_MEM_SIZE 134217728
 
+#ifdef HOST_WASI
+__attribute__((import_module("isoplane"), import_name("memory_limit_bytes")))
+extern guint64 isoplane_memory_limit_bytes (void);
+#endif
+
 guint64
 mono_determine_physical_ram_size (void)
 {
-#if defined (TARGET_WIN32)
+#if defined (HOST_WASI)
+	return isoplane_memory_limit_bytes ();
+#elif defined (TARGET_WIN32)
 	MEMORYSTATUSEX memstat;
 
 	memstat.dwLength = sizeof (memstat);
@@ -344,7 +351,11 @@ mono_determine_physical_ram_size (void)
 guint64
 mono_determine_physical_ram_available_size (void)
 {
-#if defined (TARGET_WIN32)
+#if defined (HOST_WASI)
+	guint64 total = isoplane_memory_limit_bytes ();
+	guint64 committed = (guint64)__builtin_wasm_memory_size (0) * 65536;
+	return total > committed ? total - committed : 0;
+#elif defined (TARGET_WIN32)
 	MEMORYSTATUSEX memstat;
 
 	memstat.dwLength = sizeof (memstat);
