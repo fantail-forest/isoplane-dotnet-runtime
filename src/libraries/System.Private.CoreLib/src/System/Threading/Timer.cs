@@ -439,8 +439,17 @@ namespace System.Threading
                 timer._period = Timeout.UnsignedInfinite;
                 timer._startTicks = 0;
                 timer._short = false;
+                if (_shortTimers == null && _longTimers == null)
+                {
+                    TimerQueueEmptied();
+                }
             }
         }
+
+        // A platform whose native timer is a host-owned resource releases it
+        // when the last timer goes; elsewhere the native timer fires into an
+        // empty queue.
+        partial void TimerQueueEmptied();
 
         #endregion
     }

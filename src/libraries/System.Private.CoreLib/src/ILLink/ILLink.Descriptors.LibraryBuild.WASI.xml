@@ -7,6 +7,7 @@
 			<method name="RegisterWasiPollHook" />
 			<method name="PollWasiEventLoopUntilResolved" />
 			<method name="PollWasiEventLoopUntilResolvedVoid" />
+			<method name="RunWasiEventLoopOnce" />
 		</type>
 	</assembly>
 </linker>
