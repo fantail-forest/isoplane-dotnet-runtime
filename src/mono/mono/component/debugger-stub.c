@@ -100,6 +100,7 @@ static MonoComponentDebugger fn_table = {
 	//wasi
 	&stub_receive_and_process_command_from_debugger_agent,
 	&stub_debugger_enabled,
+	&stub_debugger_enabled,
 };
 
 static bool

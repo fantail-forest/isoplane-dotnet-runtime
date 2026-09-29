@@ -4122,6 +4122,13 @@ main_loop:
 		frame->imethod->opcounts++;
 		total_executed_opcodes++;
 #endif
+#ifdef HOST_WASI
+		if (debugger_enabled && mono_component_debugger ()->check_data_breakpoints ()) {
+			frame->state.ip = ip + 1;
+			do_debugger_tramp (mono_component_debugger ()->user_break, frame);
+			CHECK_RESUME_STATE (context);
+		}
+#endif
 		MintOpcode opcode;
 		DUMP_INSTR();
 		MINT_IN_SWITCH (*ip) {
