@@ -148,8 +148,16 @@ if (CLR_CMAKE_TARGET_UNIX OR CLR_CMAKE_TARGET_BROWSER OR CLR_CMAKE_TARGET_WASI)
     add_subdirectory(System.Native)
     add_subdirectory(System.Globalization.Native)
 
-    if (CLR_CMAKE_TARGET_BROWSER OR CLR_CMAKE_TARGET_WASI)
+    if (CLR_CMAKE_TARGET_BROWSER)
         # skip for now
+    elseif (CLR_CMAKE_TARGET_WASI)
+        # OpenSSL compiled to wasm is supplied by the caller through
+        # OPENSSL_ROOT_DIR; without it the platform has no cryptography backend.
+        if (OPENSSL_ROOT_DIR)
+            # The wasi-sdk toolchain confines find_package to the sysroot.
+            list(APPEND CMAKE_FIND_ROOT_PATH ${OPENSSL_ROOT_DIR})
+            add_subdirectory(System.Security.Cryptography.Native)
+        endif ()
     elseif (CLR_CMAKE_TARGET_APPLE)
         if (NOT CLR_CMAKE_TARGET_TVOS) # no gssapi on tvOS, see https://developer.apple.com/documentation/gss
             add_subdirectory(System.Net.Security.Native)
