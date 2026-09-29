@@ -6,6 +6,8 @@
 typedef struct {
 	const char *name;
 	void *func;
+	/* Interpreter-to-native signature of the declarations that produced this entry. */
+	const char *signature;
 } PinvokeImport;
 
 typedef struct {
@@ -31,6 +33,9 @@ wasm_dl_lookup_pinvoke_table (const char *name);
 int
 wasm_dl_is_pinvoke_table (void *handle);
 
+int
+wasm_dl_pinvoke_signature_matches (void *func, const char *signature);
+
 void*
 wasm_dl_get_native_to_interp (uint32_t token, const char *key, void *extra_arg);
 
@@ -41,6 +46,14 @@ typedef void* (*MonoWasmNativeToInterpCallback) (char * cookie);
 
 void
 mono_wasm_install_interp_to_native_callback (MonoWasmNativeToInterpCallback cb);
+
+typedef int (*MonoWasmPInvokeSignatureCheck) (void *method, void *addr);
+
+void
+mono_wasm_install_pinvoke_signature_check (MonoWasmPInvokeSignatureCheck check);
+
+int
+mono_wasm_signature_cookie (void *sig, char *cookie, int size);
 
 typedef struct _MonoInterpMethodArguments MonoInterpMethodArguments;
 
