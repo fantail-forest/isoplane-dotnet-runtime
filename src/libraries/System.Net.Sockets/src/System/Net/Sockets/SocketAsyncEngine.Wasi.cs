@@ -25,6 +25,8 @@ namespace System.Net.Sockets
 
         public static bool TryRegisterSocket(IntPtr socketHandle, SocketAsyncContext context, out SocketAsyncEngine? engine, out Interop.Error error)
         {
+            // Readiness is asked of libc at each poll; the handle itself plays no part.
+            _ = socketHandle;
             engine = s_engine;
 
             RegisterWasiPollHook(context, BeforePollHook, HandleSocketEvent, context.unregisterPollHook.Token);
