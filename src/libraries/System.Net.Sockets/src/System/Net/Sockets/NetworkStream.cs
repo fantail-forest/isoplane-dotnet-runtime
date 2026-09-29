@@ -428,7 +428,6 @@ namespace System.Net.Sockets
         //     An IASyncResult, representing the read.
         public override IAsyncResult BeginRead(byte[] buffer, int offset, int count, AsyncCallback? callback, object? state)
         {
-            if (!Socket.OSSupportsThreads) throw new PlatformNotSupportedException(); // TODO remove with https://github.com/dotnet/runtime/pull/107185
 
             ValidateBufferArguments(buffer, offset, count);
             ThrowIfDisposed();
@@ -463,7 +462,6 @@ namespace System.Net.Sockets
         //     The number of bytes read. May throw an exception.
         public override int EndRead(IAsyncResult asyncResult)
         {
-            if (!Socket.OSSupportsThreads) throw new PlatformNotSupportedException(); // TODO remove with https://github.com/dotnet/runtime/pull/107185
 
             ThrowIfDisposed();
             ArgumentNullException.ThrowIfNull(asyncResult);
@@ -494,7 +492,6 @@ namespace System.Net.Sockets
         //     An IASyncResult, representing the write.
         public override IAsyncResult BeginWrite(byte[] buffer, int offset, int count, AsyncCallback? callback, object? state)
         {
-            if (!Socket.OSSupportsThreads) throw new PlatformNotSupportedException(); // TODO remove with https://github.com/dotnet/runtime/pull/107185
 
             ValidateBufferArguments(buffer, offset, count);
             ThrowIfDisposed();
@@ -526,7 +523,6 @@ namespace System.Net.Sockets
         // Returns:  The number of bytes read. May throw an exception.
         public override void EndWrite(IAsyncResult asyncResult)
         {
-            if (!Socket.OSSupportsThreads) throw new PlatformNotSupportedException(); // TODO remove with https://github.com/dotnet/runtime/pull/107185
 
             ThrowIfDisposed();
             ArgumentNullException.ThrowIfNull(asyncResult);
