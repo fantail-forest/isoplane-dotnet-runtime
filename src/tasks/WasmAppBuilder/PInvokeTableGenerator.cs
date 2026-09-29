@@ -26,13 +26,15 @@ internal sealed class PInvokeTableGenerator
     private readonly List<PInvokeCallback> callbacks = new();
     private readonly PInvokeCollector _pinvokeCollector;
     private readonly bool _isLibraryMode;
+    private readonly HashSet<string>? _nativeSymbols;
 
-    public PInvokeTableGenerator(Func<string, string> fixupSymbolName, LogAdapter log, bool isLibraryMode = false)
+    public PInvokeTableGenerator(Func<string, string> fixupSymbolName, LogAdapter log, bool isLibraryMode = false, HashSet<string>? nativeSymbols = null)
     {
         Log = log;
         _fixupSymbolName = fixupSymbolName;
         _pinvokeCollector = new(log);
         _isLibraryMode = isLibraryMode;
+        _nativeSymbols = nativeSymbols;
     }
 
     public void ScanAssembly(Assembly asm)
@@ -285,7 +287,7 @@ internal sealed class PInvokeTableGenerator
         return
             $$"""
             {{(pinvoke.WasmLinkage ? $"__attribute__((import_module(\"{EscapeLiteral(pinvoke.Module)}\"),import_name(\"{EscapeLiteral(pinvoke.EntryPoint)}\")))" : "")}}
-            {{(pinvoke.WasmLinkage ? "extern " : "")}}{{MapType(realReturnType)}} {{CEntryPoint(pinvoke)}} ({{string.Join(", ", realParameterTypes)}});
+            {{(!pinvoke.WasmLinkage && _nativeSymbols != null && !_nativeSymbols.Contains(CEntryPoint(pinvoke)) ? "__attribute__((weak)) " : "")}}{{(pinvoke.WasmLinkage ? "extern " : "")}}{{MapType(realReturnType)}} {{CEntryPoint(pinvoke)}} ({{string.Join(", ", realParameterTypes)}});
             """;
     }
 

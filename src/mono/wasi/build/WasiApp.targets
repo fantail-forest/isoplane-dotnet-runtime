@@ -323,8 +323,45 @@
     </ItemGroup>
   </Target>
 
+  <Target Name="_WasiSelectNativeArchives" DependsOnTargets="_WasmSelectRuntimeComponentsForLinking">
+    <ItemGroup>
+      <_WasiImplicitNativeLibrary Include="c;wasi-emulated-process-clocks;wasi-emulated-signal;wasi-emulated-mman" />
+    </ItemGroup>
+    <PropertyGroup>
+      <!-- FIXME: eh case -->
+      <_WasmEHLib Condition="'$(WasmEnableExceptionHandling)' == 'true'">libmono-wasm-eh-wasm.a</_WasmEHLib>
+      <!--<_WasmEHLib Condition="'$(WasmEnableExceptionHandling)' != 'true'">libmono-wasm-eh-js.a</_WasmEHLib>-->
+      <!--<_WasmEHLibToExclude Condition="'$(WasmEnableExceptionHandling)' == 'true'">libmono-wasm-eh-js.a</_WasmEHLibToExclude>-->
+      <_WasmEHLibToExclude Condition="'$(WasmEnableExceptionHandling)' != 'true'">libmono-wasm-eh-wasm.a</_WasmEHLibToExclude>
+      <_WasmSIMDLib Condition="'$(WasmEnableSIMD)' == 'true'">libmono-wasm-simd.a</_WasmSIMDLib>
+      <_WasmSIMDLib Condition="'$(WasmEnableSIMD)' != 'true'">libmono-wasm-nosimd.a</_WasmSIMDLib>
+      <_WasmSIMDLibToExclude Condition="'$(WasmEnableSIMD)' != 'true'">libmono-wasm-simd.a</_WasmSIMDLibToExclude>
+      <_WasmSIMDLibToExclude Condition="'$(WasmEnableSIMD)' == 'true'">libmono-wasm-nosimd.a</_WasmSIMDLibToExclude>
+    </PropertyGroup>
+
+    <ItemGroup>
+      <_MonoRuntimeComponentDontLink Include="wasm-bundled-timezones.a" Condition="'$(InvariantTimezone)' == 'true'"/>
+      <_MonoRuntimeComponentDontLink Include="libmono-component-diagnostics_tracing-static.a" Condition="'$(EnableDiagnostics)' != 'true'" />
+      <_MonoRuntimeComponentDontLink Include="libmono-component-diagnostics_tracing-stub-static.lib" Condition="'$(EnableDiagnostics)' == 'true'" />
+    </ItemGroup>
+
+    <ItemGroup>
+      <_WasiNativeArchiveForLinking
+          Include="$(MicrosoftNetCoreAppRuntimePackRidNativeDir)*.a"
+          Exclude="@(_MonoRuntimeComponentDontLink->'$(MicrosoftNetCoreAppRuntimePackRidNativeDir)%(Identity)')" />
+      <_WasiNativeArchiveForLinking Condition="'$(_WasmEHLib)' != ''" Include="$(MicrosoftNetCoreAppRuntimePackRidNativeDir)$(_WasmEHLib)" />
+      <_WasiNativeArchiveForLinking Condition="'$(_WasmSIMDLib)' != ''" Include="$(MicrosoftNetCoreAppRuntimePackRidNativeDir)$(_WasmSIMDLib)" />
+      <_WasiNativeArchiveForLinking Remove="$(MicrosoftNetCoreAppRuntimePackRidNativeDir)$(_WasmEHLibToExclude)" />
+      <_WasiNativeArchiveForLinking Remove="$(MicrosoftNetCoreAppRuntimePackRidNativeDir)$(_WasmSIMDLibToExclude)" />
+
+      <_WasiNativeArchiveForLinking Include="$(WasiSysRoot)\lib\wasm32-wasip2\libc++.a" />
+      <_WasiNativeArchiveForLinking Include="$(WasiSysRoot)\lib\wasm32-wasip2\libc++abi.a" />
+
+    </ItemGroup>
+  </Target>
+
   <Target Name="_WasiWriteRspForLinking"
-          DependsOnTargets="$(WasiWriteRspForLinkingDependsOn)"
+          DependsOnTargets="$(WasiWriteRspForLinkingDependsOn);_WasiSelectNativeArchives"
           BeforeTargets="_WasmWriteRspForLinking"
           Returns="@(_WasmLinkStepArgs)">
 
@@ -347,24 +384,6 @@
       <FileWrites Include="$(_WasiGetEntrypointCFile)" />
     </ItemGroup>
 
-    <PropertyGroup>
-      <!-- FIXME: eh case -->
-      <_WasmEHLib Condition="'$(WasmEnableExceptionHandling)' == 'true'">libmono-wasm-eh-wasm.a</_WasmEHLib>
-      <!--<_WasmEHLib Condition="'$(WasmEnableExceptionHandling)' != 'true'">libmono-wasm-eh-js.a</_WasmEHLib>-->
-      <!--<_WasmEHLibToExclude Condition="'$(WasmEnableExceptionHandling)' == 'true'">libmono-wasm-eh-js.a</_WasmEHLibToExclude>-->
-      <_WasmEHLibToExclude Condition="'$(WasmEnableExceptionHandling)' != 'true'">libmono-wasm-eh-wasm.a</_WasmEHLibToExclude>
-      <_WasmSIMDLib Condition="'$(WasmEnableSIMD)' == 'true'">libmono-wasm-simd.a</_WasmSIMDLib>
-      <_WasmSIMDLib Condition="'$(WasmEnableSIMD)' != 'true'">libmono-wasm-nosimd.a</_WasmSIMDLib>
-      <_WasmSIMDLibToExclude Condition="'$(WasmEnableSIMD)' != 'true'">libmono-wasm-simd.a</_WasmSIMDLibToExclude>
-      <_WasmSIMDLibToExclude Condition="'$(WasmEnableSIMD)' == 'true'">libmono-wasm-nosimd.a</_WasmSIMDLibToExclude>
-    </PropertyGroup>
-
-    <ItemGroup>
-      <_MonoRuntimeComponentDontLink Include="wasm-bundled-timezones.a" Condition="'$(InvariantTimezone)' == 'true'"/>
-      <_MonoRuntimeComponentDontLink Include="libmono-component-diagnostics_tracing-static.a" Condition="'$(EnableDiagnostics)' != 'true'" />
-      <_MonoRuntimeComponentDontLink Include="libmono-component-diagnostics_tracing-stub-static.lib" Condition="'$(EnableDiagnostics)' == 'true'" />
-    </ItemGroup>
-
     <ItemGroup>
       <!-- using relative paths fixes https://github.com/dotnet/runtime/issues/106845 -->
       <RelativeBitcodeFiles Include="%(_BitcodeFile.ObjectFile)" Condition="'%(_BitcodeFile.ObjectFile)' != ''">
@@ -380,16 +399,7 @@
       <_WasmNativeFileForLinking Include="%(RelativeBitcodeFiles.RelativePath)" />
       <!--<_WasmNativeFileForLinking Include="%(_WasmSourceFileToCompile.ObjectFile)" />-->
 
-      <_WasmNativeFileForLinking
-          Include="$(MicrosoftNetCoreAppRuntimePackRidNativeDir)*.a"
-          Exclude="@(_MonoRuntimeComponentDontLink->'$(MicrosoftNetCoreAppRuntimePackRidNativeDir)%(Identity)')" />
-      <_WasmNativeFileForLinking Condition="'$(_WasmEHLib)' != ''" Include="$(MicrosoftNetCoreAppRuntimePackRidNativeDir)$(_WasmEHLib)" />
-      <_WasmNativeFileForLinking Condition="'$(_WasmSIMDLib)' != ''" Include="$(MicrosoftNetCoreAppRuntimePackRidNativeDir)$(_WasmSIMDLib)" />
-      <_WasmNativeFileForLinking Remove="$(MicrosoftNetCoreAppRuntimePackRidNativeDir)$(_WasmEHLibToExclude)" />
-      <_WasmNativeFileForLinking Remove="$(MicrosoftNetCoreAppRuntimePackRidNativeDir)$(_WasmSIMDLibToExclude)" />
-
-      <_WasmNativeFileForLinking Include="$(WasiSysRoot)\lib\wasm32-wasip2\libc++.a" />
-      <_WasmNativeFileForLinking Include="$(WasiSysRoot)\lib\wasm32-wasip2\libc++abi.a" />
+      <_WasmNativeFileForLinking Include="@(_WasiNativeArchiveForLinking)" />
 
       <_WasmNativeFileForLinking Include="@(NativeFileReference)" />
     </ItemGroup>
@@ -408,7 +418,8 @@
       <_WasiLinkStepArgs Include="-Wl,--export=malloc,--export=free,--export=__heap_base,--export=__data_end" />
       <!-- keep in sync with src\mono\wasi\wasi.proj -->
       <!-- keep in sync with src\native\libs\CMakeLists.txt -->
-      <_WasiLinkStepArgs Include="-Wl,-z,stack-size=8388608,-lwasi-emulated-process-clocks,-lwasi-emulated-signal,-lwasi-emulated-mman"/>
+      <_WasiLinkStepArgs Include="-Wl,-z,stack-size=8388608"/>
+      <_WasiLinkStepArgs Include="@(_WasiImplicitNativeLibrary->'-l%(Identity)')" />
       <!--
       this together with some DLLImports makes dependency on wasi:http@0.2.0
       it will get trimmed when HTTP is not used and using publish + native rebuild
