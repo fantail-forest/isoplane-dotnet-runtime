@@ -9,6 +9,7 @@ using System.Runtime.InteropServices;
 using System.Security.Cryptography.Asn1;
 using System.Security.Cryptography.X509Certificates.Asn1;
 using System.Threading;
+using System.Threading.Tasks;
 using Microsoft.Win32.SafeHandles;
 
 namespace System.Security.Cryptography.X509Certificates
@@ -29,6 +30,13 @@ namespace System.Security.Cryptography.X509Certificates
 
         private const ulong X509_R_CERT_ALREADY_IN_HASH_TABLE = 0x0B07D065;
 
+        /// <summary>
+        /// Whether downloaded revocation material and issuers are also written to the user's
+        /// profile. A WASI guest has no directory it could persist into, so it keeps CRLs, OCSP
+        /// responses and downloaded issuers only in the bounded in-memory caches.
+        /// </summary>
+        internal static bool PersistsToDisk { get; } = !OperatingSystem.IsWasi();
+
         public static void AddCrlForCertificate(
             SafeX509Handle cert,
             SafeX509StoreHandle store,
@@ -36,6 +44,51 @@ namespace System.Security.Cryptography.X509Certificates
             DateTime verificationTime,
             TimeSpan downloadTimeout)
         {
+            if (!NeedsCrlDownload(cert, store, revocationMode, verificationTime, out string? url, out string? crlFileName))
+            {
+                return;
+            }
+
+            SafeX509CrlHandle? crl = OpenSslCertificateAssetDownloader.DownloadCrl(url, downloadTimeout);
+            CacheAndAttachDownloadedCrl(crl, crlFileName, store);
+        }
+
+        /// <summary>
+        /// <see cref="AddCrlForCertificate"/> with the download awaited instead of blocked on.
+        /// </summary>
+        public static async ValueTask AddCrlForCertificateAsync(
+            SafeX509Handle cert,
+            SafeX509StoreHandle store,
+            X509RevocationMode revocationMode,
+            DateTime verificationTime,
+            TimeSpan downloadTimeout,
+            CancellationToken cancellationToken)
+        {
+            if (!NeedsCrlDownload(cert, store, revocationMode, verificationTime, out string? url, out string? crlFileName))
+            {
+                return;
+            }
+
+            SafeX509CrlHandle? crl =
+                await OpenSslCertificateAssetDownloader.DownloadCrlAsync(url, downloadTimeout, cancellationToken).ConfigureAwait(false);
+
+            CacheAndAttachDownloadedCrl(crl, crlFileName, store);
+        }
+
+        /// <summary>
+        /// Attaches a cached CRL for the certificate's distribution point to the store when one is
+        /// usable, and otherwise says whether a download is called for, naming what to fetch.
+        /// </summary>
+        private static bool NeedsCrlDownload(
+            SafeX509Handle cert,
+            SafeX509StoreHandle store,
+            X509RevocationMode revocationMode,
+            DateTime verificationTime,
+            [NotNullWhen(true)] out string? url,
+            [NotNullWhen(true)] out string? crlFileName)
+        {
+            crlFileName = null;
+
             // In Offline mode, accept any cached CRL we have.
             // "CRL is Expired" is a better match for Offline than "Could not find CRL"
             if (revocationMode != X509RevocationMode.Online)
@@ -43,14 +96,14 @@ namespace System.Security.Cryptography.X509Certificates
                 verificationTime = DateTime.MinValue;
             }
 
-            string? url = GetCdpUrl(cert);
+            url = GetCdpUrl(cert);
 
             if (url == null)
             {
-                return;
+                return false;
             }
 
-            string crlFileName = GetCrlFileName(cert, url);
+            crlFileName = GetCrlFileName(cert, url);
 
             if (OpenSslX509ChainEventSource.Log.IsEnabled())
             {
@@ -59,7 +112,7 @@ namespace System.Security.Cryptography.X509Certificates
 
             if (AddCachedCrl(crlFileName, store, verificationTime))
             {
-                return;
+                return false;
             }
 
             // Don't do any work if we're prohibited from fetching new CRLs
@@ -70,10 +123,10 @@ namespace System.Security.Cryptography.X509Certificates
                     OpenSslX509ChainEventSource.Log.CrlCheckOffline();
                 }
 
-                return;
+                return false;
             }
 
-            DownloadAndAddCrl(url, crlFileName, store, downloadTimeout);
+            return true;
         }
 
         private static bool AddCachedCrl(string crlFileName, SafeX509StoreHandle store, DateTime verificationTime)
@@ -114,6 +167,11 @@ namespace System.Security.Cryptography.X509Certificates
             else if (OpenSslX509ChainEventSource.Log.IsEnabled())
             {
                 OpenSslX509ChainEventSource.Log.CrlCacheInMemoryMiss();
+            }
+
+            if (!PersistsToDisk)
+            {
+                return false;
             }
 
             // Check the disk cache.
@@ -276,13 +334,12 @@ namespace System.Security.Cryptography.X509Certificates
             }
         }
 
-        private static void DownloadAndAddCrl(
-            string url,
+        private static void CacheAndAttachDownloadedCrl(
+            SafeX509CrlHandle? crl,
             string crlFileName,
-            SafeX509StoreHandle store,
-            TimeSpan downloadTimeout)
+            SafeX509StoreHandle store)
         {
-            CachedCrlEntry? newEntry = DownloadAndCacheCrl(url, crlFileName, downloadTimeout);
+            CachedCrlEntry? newEntry = CacheDownloadedCrl(crl, crlFileName);
 
             if (newEntry is not null)
             {
@@ -290,13 +347,8 @@ namespace System.Security.Cryptography.X509Certificates
             }
         }
 
-        private static CachedCrlEntry? DownloadAndCacheCrl(
-            string url,
-            string crlFileName,
-            TimeSpan downloadTimeout)
+        private static CachedCrlEntry? CacheDownloadedCrl(SafeX509CrlHandle? crl, string crlFileName)
         {
-            SafeX509CrlHandle? crl = OpenSslCertificateAssetDownloader.DownloadCrl(url, downloadTimeout);
-
             // null is a valid return (e.g. no remainingDownloadTime)
             if (crl == null || crl.IsInvalid)
             {
@@ -319,6 +371,16 @@ namespace System.Security.Cryptography.X509Certificates
                 expiryTime = OpenSslX509CertificateReader.ExtractValidityDateTime(nextUpdatePtr);
             }
 
+            if (PersistsToDisk)
+            {
+                WriteCrlToDisk(crl, crlFileName);
+            }
+
+            return new CachedCrlEntry(crl, expiryTime);
+        }
+
+        private static void WriteCrlToDisk(SafeX509CrlHandle crl, string crlFileName)
+        {
             // Saving the CRL to the disk is just a performance optimization for later requests to not
             // need to use the network again, so failure to save shouldn't throw an exception or mark
             // the chain as invalid.
@@ -348,8 +410,6 @@ namespace System.Security.Cryptography.X509Certificates
             {
                 OpenSslX509ChainEventSource.Log.CrlCacheWriteSucceeded();
             }
-
-            return new CachedCrlEntry(crl, expiryTime);
         }
 
         private static DateTime ExpirationTimeFromCacheFileTime(DateTime cacheFileTime)
