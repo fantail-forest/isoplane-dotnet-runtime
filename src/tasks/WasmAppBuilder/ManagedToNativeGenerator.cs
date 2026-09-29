@@ -35,6 +35,12 @@ public class ManagedToNativeGenerator : Task
 
     public bool IsLibraryMode { get; set; }
 
+    public string? PInvokeSymbolInventoryFile { get; set; }
+
+    public bool RequirePInvokeSymbolInventory { get; set; }
+
+    private string[] _cacheInputs = Array.Empty<string>();
+
     [Output]
     public string[]? FileWrites { get; private set; }
 
@@ -67,11 +73,26 @@ public class ManagedToNativeGenerator : Task
 
     private void ExecuteInternal(LogAdapter log)
     {
+        HashSet<string>? nativeSymbols = null;
+        if (!string.IsNullOrEmpty(PInvokeSymbolInventoryFile))
+        {
+            if (!File.Exists(PInvokeSymbolInventoryFile))
+                throw new LogAsErrorException($"Native symbol inventory is missing: {PInvokeSymbolInventoryFile}");
+            nativeSymbols = new HashSet<string>(File.ReadAllLines(PInvokeSymbolInventoryFile), StringComparer.Ordinal);
+            nativeSymbols.Remove("");
+            if (nativeSymbols.Count == 0)
+                throw new LogAsErrorException("Native symbol inventory is empty.");
+        }
+        else if (RequirePInvokeSymbolInventory)
+            throw new LogAsErrorException("This runtime profile requires a native symbol inventory.");
+        _cacheInputs = PInvokeModules.Select(module => "module:" + module)
+            .Concat(nativeSymbols?.Select(symbol => "symbol:" + symbol) ?? Enumerable.Empty<string>())
+            .OrderBy(value => value, StringComparer.Ordinal).ToArray();
         Dictionary<string, string> _symbolNameFixups = new();
         List<string> managedAssemblies = FilterOutUnmanagedBinaries(Assemblies);
         if (ShouldRun(managedAssemblies))
         {
-            var pinvoke = new PInvokeTableGenerator(FixupSymbolName, log, IsLibraryMode);
+            var pinvoke = new PInvokeTableGenerator(FixupSymbolName, log, IsLibraryMode, nativeSymbols);
             var icall = new IcallTableGenerator(RuntimeIcallTableFile, FixupSymbolName, log);
 
             var resolver = new PathAssemblyResolver(managedAssemblies);
@@ -92,7 +113,7 @@ public class ManagedToNativeGenerator : Task
             m2n.Generate(cookies, InterpToNativeOutputPath);
 
             if (!string.IsNullOrEmpty(CacheFilePath))
-                File.WriteAllLines(CacheFilePath, PInvokeModules);
+                File.WriteAllLines(CacheFilePath, _cacheInputs);
         }
 
         List<string> fileWritesList = new() { PInvokeOutputPath, InterpToNativeOutputPath };
@@ -124,7 +145,7 @@ public class ManagedToNativeGenerator : Task
         }
 
         string oldModules = string.Join(",", File.ReadLines(CacheFilePath).OrderBy(l => l));
-        string newModules = string.Join(",", PInvokeModules.OrderBy(l => l));
+        string newModules = string.Join(",", _cacheInputs.OrderBy(l => l));
         if (!string.Equals(oldModules, newModules, StringComparison.InvariantCulture))
         {
             Log.LogMessage(MessageImportance.Low, $"Running because the list of pinvoke modules has changed from: {oldModules} to {newModules} .");
