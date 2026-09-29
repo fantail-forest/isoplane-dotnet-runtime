@@ -42,7 +42,7 @@ internal static partial class Interop
         internal static unsafe partial int SslCtxSetCaching(SafeSslContextHandle ctx, int mode, int cacheSize, int contextIdLength, Span<byte> contextId, delegate* unmanaged<IntPtr, IntPtr, int> neewSessionCallback, delegate* unmanaged<IntPtr, IntPtr, void> removeSessionCallback);
 
         [LibraryImport(Libraries.CryptoNative, EntryPoint = "CryptoNative_SslCtxRemoveSession")]
-        internal static unsafe partial void SslCtxRemoveSession(SafeSslContextHandle ctx, IntPtr session);
+        internal static unsafe partial int SslCtxRemoveSession(SafeSslContextHandle ctx, IntPtr session);
 
         internal static bool AddExtraChainCertificates(SafeSslContextHandle ctx, ReadOnlyCollection<X509Certificate2> chain)
         {
