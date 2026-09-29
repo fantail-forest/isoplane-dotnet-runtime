@@ -7472,6 +7472,10 @@ vm_commands (int command, int id, guint8 *p, guint8 *end, Buffer *buf)
 		break;
 	}
 	case CMD_VM_SUSPEND:
+#ifdef HOST_WASI
+		if (wasi_suspend_count == 0)
+			mono_wasm_save_thread_context ();
+#endif
 		suspend_vm_func ();
 		wait_for_suspend ();
 		break;
@@ -10150,6 +10154,10 @@ thread_commands (int command, guint8 *p, guint8 *end, Buffer *buf)
 	}
 	case CMD_THREAD_GET_FRAME_INFO: {
 		int i, start_frame, length;
+#ifdef HOST_WASI
+		if (wasi_suspend_count == 0)
+			return ERR_NOT_SUSPENDED;
+#endif
 
 		// Wait for suspending if it already started
 		// FIXME: Races with suspend_count

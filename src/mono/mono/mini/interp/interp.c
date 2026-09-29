@@ -2989,6 +2989,14 @@ do_debugger_tramp (void (*tramp) (void), InterpFrame *frame)
 	interp_pop_lmf (&ext);
 }
 
+#ifdef HOST_WASI
+static void
+poll_debugger_commands (void)
+{
+	mono_component_debugger ()->receive_and_process_command_from_debugger_agent ();
+}
+#endif
+
 static MONO_NEVER_INLINE MonoException*
 do_transform_method (InterpMethod *imethod, InterpFrame *frame, ThreadContext *context)
 {
@@ -7544,8 +7552,11 @@ MINT_IN_CASE(MINT_BRTRUE_I8_SP) ZEROP_SP(gint64, !=); MINT_IN_BREAK;
 		MINT_IN_CASE(MINT_SDB_SEQ_POINT)
 			/* Just a placeholder for a breakpoint */
 #if HOST_WASI
-			if (debugger_enabled)
-				mono_component_debugger()->receive_and_process_command_from_debugger_agent ();
+			if (debugger_enabled) {
+				frame->state.ip = ip + 1;
+				do_debugger_tramp (poll_debugger_commands, frame);
+				CHECK_RESUME_STATE (context);
+			}
 #endif
 			++ip;
 			MINT_IN_BREAK;
