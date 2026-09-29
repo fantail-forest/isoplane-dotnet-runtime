@@ -22,6 +22,10 @@ namespace System.Threading
         private static List<TimerQueue>? s_scheduledTimers;
         private static List<TimerQueue>? s_scheduledTimersToFire;
         private static long s_shortestDueTimeMs = long.MaxValue;
+        // The registration of the pollable armed for s_shortestDueTimeMs. A
+        // shorter deadline supersedes it and an emptied queue releases it, so
+        // the host never holds a timer nothing waits on.
+        private static CancellationTokenSource? s_armed;
 
         // this means that it's in the s_scheduledTimers collection, not that it's the one which would run on the next TimeoutCallback
         private bool _isScheduled;
@@ -35,9 +39,14 @@ namespace System.Threading
             try
             {
                 s_shortestDueTimeMs = long.MaxValue;
+                s_armed = null;
 
                 long currentTimeMs = TickCount64;
-                SetNextTimer(PumpTimerQueue(currentTimeMs), currentTimeMs);
+                PumpTimerQueue(currentTimeMs);
+                // A queue that re-armed itself while firing is scheduled again
+                // by now; the earliest deadline is read after the pump, so the
+                // registration it made is kept rather than released.
+                SetNextTimer(ShortestDueTime(), currentTimeMs);
             }
             catch (Exception e)
             {
@@ -70,20 +79,48 @@ namespace System.Threading
         {
             if (shortestDueTimeMs == long.MaxValue)
             {
+                ReleaseArmedTimer();
                 return;
             }
 
             // this also covers s_shortestDueTimeMs = long.MaxValue when none is scheduled
             if (s_shortestDueTimeMs > shortestDueTimeMs)
             {
+                ReleaseArmedTimer();
                 s_shortestDueTimeMs = shortestDueTimeMs;
                 ulong shortestWaitMs = (ulong)Math.Max((long)(shortestDueTimeMs - currentTimeMs), 0);
 
                 // `SubscribeDuration` expects nanoseconds:
                 var pollable = MonotonicClockInterop.SubscribeDuration(shortestWaitMs * 1000 * 1000);
-                Task task = WasiEventLoop.RegisterWasiPollable(pollable, true, CancellationToken.None);
-                task.ContinueWith(TimerHandler, TaskScheduler.Default);
+                var armed = new CancellationTokenSource();
+                s_armed = armed;
+                Task task = WasiEventLoop.RegisterWasiPollable(pollable, true, armed.Token);
+                // A superseded registration is cancelled, not fired.
+                task.ContinueWith(TimerHandler, CancellationToken.None, TaskContinuationOptions.OnlyOnRanToCompletion, TaskScheduler.Default);
             }
+        }
+
+        partial void TimerQueueEmptied()
+        {
+            if (!_isScheduled)
+            {
+                return;
+            }
+            _isScheduled = false;
+            _isTimerScheduled = false;
+            s_scheduledTimers?.Remove(this);
+            // The armed registration was for this queue's deadline; the host
+            // timer is re-armed for whatever remains, or released.
+            s_shortestDueTimeMs = long.MaxValue;
+            SetNextTimer(ShortestDueTime(), TickCount64);
+        }
+
+        private static void ReleaseArmedTimer()
+        {
+            CancellationTokenSource? armed = s_armed;
+            s_armed = null;
+            armed?.Cancel();
+            armed?.Dispose();
         }
 
         private static long ShortestDueTime()
