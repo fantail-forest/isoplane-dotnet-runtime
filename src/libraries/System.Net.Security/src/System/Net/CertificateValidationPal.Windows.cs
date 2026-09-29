@@ -7,6 +7,8 @@ using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using System.Security.Principal;
+using System.Threading;
+using System.Threading.Tasks;
 using Microsoft.Win32.SafeHandles;
 using static Interop.SspiCli;
 
@@ -14,15 +16,19 @@ namespace System.Net
 {
     internal static partial class CertificateValidationPal
     {
-        internal static SslPolicyErrors VerifyCertificateProperties(
+        // The Windows chain engine retrieves for itself, so the verification completes synchronously.
+        internal static ValueTask<SslPolicyErrors> VerifyCertificatePropertiesAsync<TIOAdapter>(
             SafeDeleteContext? _ /*securityContext*/,
             X509Chain chain,
             X509Certificate2 remoteCertificate,
             bool checkCertName,
             bool isServer,
-            string? hostName)
+            string? hostName,
+            CancellationToken cancellationToken)
+            where TIOAdapter : IReadWriteAdapter
         {
-            return CertificateValidation.BuildChainAndVerifyProperties(chain, remoteCertificate, checkCertName, isServer, hostName);
+            return new ValueTask<SslPolicyErrors>(
+                CertificateValidation.BuildChainAndVerifyProperties(chain, remoteCertificate, checkCertName, isServer, hostName));
         }
 
         //

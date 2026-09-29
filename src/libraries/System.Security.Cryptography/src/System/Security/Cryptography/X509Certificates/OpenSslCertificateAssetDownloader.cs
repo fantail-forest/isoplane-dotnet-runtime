@@ -6,6 +6,7 @@ using System.Diagnostics.CodeAnalysis;
 using System.IO;
 using System.Reflection;
 using System.Threading;
+using System.Threading.Tasks;
 using Microsoft.Win32.SafeHandles;
 using OpenSslX509ChainEventSource = System.Security.Cryptography.X509Certificates.OpenSslX509ChainEventSource;
 
@@ -15,8 +16,49 @@ namespace System.Security.Cryptography.X509Certificates
     {
         internal static X509Certificate2? DownloadCertificate(string uri, TimeSpan downloadTimeout)
         {
-            byte[]? data = DownloadAsset(uri, downloadTimeout);
+            return DecodeCertificate(DownloadAsset(uri, downloadTimeout));
+        }
 
+        internal static async ValueTask<X509Certificate2?> DownloadCertificateAsync(
+            string uri,
+            TimeSpan downloadTimeout,
+            CancellationToken cancellationToken)
+        {
+            return DecodeCertificate(await DownloadAssetAsync(uri, downloadTimeout, cancellationToken).ConfigureAwait(false));
+        }
+
+        internal static SafeX509CrlHandle? DownloadCrl(string uri, TimeSpan downloadTimeout)
+        {
+            return DecodeCrl(DownloadAsset(uri, downloadTimeout));
+        }
+
+        internal static async ValueTask<SafeX509CrlHandle?> DownloadCrlAsync(
+            string uri,
+            TimeSpan downloadTimeout,
+            CancellationToken cancellationToken)
+        {
+            return DecodeCrl(await DownloadAssetAsync(uri, downloadTimeout, cancellationToken).ConfigureAwait(false));
+        }
+
+        /// <summary>
+        /// Fetches an OCSP response by GET, returning its bytes for the caller to decode (and
+        /// possibly keep) through <see cref="DecodeOcspResponse"/>.
+        /// </summary>
+        internal static byte[]? DownloadOcspGet(string uri, TimeSpan downloadTimeout)
+        {
+            return DownloadAsset(uri, downloadTimeout);
+        }
+
+        internal static ValueTask<byte[]?> DownloadOcspGetAsync(
+            string uri,
+            TimeSpan downloadTimeout,
+            CancellationToken cancellationToken)
+        {
+            return new ValueTask<byte[]?>(DownloadAssetAsync(uri, downloadTimeout, cancellationToken));
+        }
+
+        private static X509Certificate2? DecodeCertificate(byte[]? data)
+        {
             if (data == null || data.Length == 0)
             {
                 return null;
@@ -55,10 +97,8 @@ namespace System.Security.Cryptography.X509Certificates
             }
         }
 
-        internal static SafeX509CrlHandle? DownloadCrl(string uri, TimeSpan downloadTimeout)
+        private static SafeX509CrlHandle? DecodeCrl(byte[]? data)
         {
-            byte[]? data = DownloadAsset(uri, downloadTimeout);
-
             if (data == null)
             {
                 return null;
@@ -102,10 +142,9 @@ namespace System.Security.Cryptography.X509Certificates
             return null;
         }
 
-        internal static SafeOcspResponseHandle? DownloadOcspGet(string uri, TimeSpan downloadTimeout)
+        /// <summary>Decodes a downloaded response; an undecodable one yields an invalid handle.</summary>
+        internal static SafeOcspResponseHandle? DecodeOcspResponse(byte[]? data)
         {
-            byte[]? data = DownloadAsset(uri, downloadTimeout);
-
             if (data == null)
             {
                 return null;
@@ -133,6 +172,11 @@ namespace System.Security.Cryptography.X509Certificates
         private static byte[]? DownloadAsset(string uri, TimeSpan downloadTimeout)
         {
             return System.Net.Http.X509ResourceClient.DownloadAsset(uri, downloadTimeout);
+        }
+
+        private static Task<byte[]?> DownloadAssetAsync(string uri, TimeSpan downloadTimeout, CancellationToken cancellationToken)
+        {
+            return System.Net.Http.X509ResourceClient.DownloadAssetAsync(uri, downloadTimeout, cancellationToken);
         }
     }
 }

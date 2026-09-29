@@ -19,7 +19,16 @@ namespace System.Net.Security
 
         internal static SslPolicyErrors BuildChainAndVerifyProperties(X509Chain chain, X509Certificate2 remoteCertificate, bool checkCertName, bool _ /*isServer*/, string? hostName)
         {
-            SslPolicyErrors errors = chain.Build(remoteCertificate) ?
+            return VerifyProperties(chain.Build(remoteCertificate), remoteCertificate, checkCertName, hostName);
+        }
+
+        /// <summary>
+        /// The policy errors for a chain that has been built (with <paramref name="chainBuilt"/>
+        /// its verdict) plus the host name check, for a caller that built the chain itself.
+        /// </summary>
+        internal static SslPolicyErrors VerifyProperties(bool chainBuilt, X509Certificate2 remoteCertificate, bool checkCertName, string? hostName)
+        {
+            SslPolicyErrors errors = chainBuilt ?
                 SslPolicyErrors.None :
                 SslPolicyErrors.RemoteCertificateChainErrors;
 

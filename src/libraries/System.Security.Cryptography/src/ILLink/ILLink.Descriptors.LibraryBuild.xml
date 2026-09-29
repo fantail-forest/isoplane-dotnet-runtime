@@ -8,5 +8,9 @@
       <method name="EnableMemoryTracking" />
       <method name="DisableMemoryTracking" />
     </type>
+    <type fullname="System.Security.Cryptography.X509Certificates.X509Chain">
+      <!-- Reached only through System.Net.Security's UnsafeAccessor -->
+      <method name="BuildAsync" />
+    </type>
   </assembly>
 </linker>

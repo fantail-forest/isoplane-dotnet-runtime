@@ -11,6 +11,8 @@ using System.Security.Authentication;
 using System.Security.Authentication.ExtendedProtection;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
+using System.Threading;
+using System.Threading.Tasks;
 
 namespace System.Net.Security
 {
@@ -1037,11 +1039,17 @@ namespace System.Net.Security
             checkCertName, if true checks the CN field of the certificate
         --*/
 
-        //This method validates a remote certificate.
-        internal bool VerifyRemoteCertificate(RemoteCertificateValidationCallback? remoteCertValidationCallback, SslCertificateTrust? trust, ref ProtocolToken alertToken, out SslPolicyErrors sslPolicyErrors, out X509ChainStatusFlags chainStatus)
+        // This method validates a remote certificate. The chain build is the one awaited step,
+        // and only on the asynchronous adapter path; the synchronous adapter builds synchronously.
+        internal async ValueTask<CertificateVerificationResult> VerifyRemoteCertificateAsync<TIOAdapter>(
+            RemoteCertificateValidationCallback? remoteCertValidationCallback,
+            SslCertificateTrust? trust,
+            CancellationToken cancellationToken)
+            where TIOAdapter : IReadWriteAdapter
         {
-            sslPolicyErrors = SslPolicyErrors.None;
-            chainStatus = X509ChainStatusFlags.NoError;
+            SslPolicyErrors sslPolicyErrors = SslPolicyErrors.None;
+            X509ChainStatusFlags chainStatus = X509ChainStatusFlags.NoError;
+            ProtocolToken alertToken = default;
 
             // We don't catch exceptions in this method, so it's safe for "accepted" be initialized with true.
             bool success = false;
@@ -1064,7 +1072,7 @@ namespace System.Net.Security
                     // This is renegotiation or TLS 1.3 and the certificate did not change.
                     // There is no reason to process callback again as we already established trust.
                     certificate.Dispose();
-                    return true;
+                    return new CertificateVerificationResult(true, sslPolicyErrors, chainStatus, alertToken);
                 }
 
                 // don't assign to _remoteCertificate yet, this prevents weird exceptions if SslStream is disposed in parallel with X509Chain building
@@ -1108,13 +1116,14 @@ namespace System.Net.Security
                         chain.ChainPolicy.ApplicationPolicy.Add(_sslAuthenticationOptions.IsServer ? s_clientAuthOid : s_serverAuthOid);
                     }
 
-                    sslPolicyErrors |= CertificateValidationPal.VerifyCertificateProperties(
+                    sslPolicyErrors |= await CertificateValidationPal.VerifyCertificatePropertiesAsync<TIOAdapter>(
                         _securityContext!,
                         chain,
                         certificate,
                         _sslAuthenticationOptions.CheckCertName,
                         _sslAuthenticationOptions.IsServer,
-                        TargetHostNameHelper.NormalizeHostName(_sslAuthenticationOptions.TargetHost));
+                        TargetHostNameHelper.NormalizeHostName(_sslAuthenticationOptions.TargetHost),
+                        cancellationToken).ConfigureAwait(false);
                 }
 
                 _remoteCertificate = certificate;
@@ -1186,7 +1195,7 @@ namespace System.Net.Security
                 }
             }
 
-            return success;
+            return new CertificateVerificationResult(success, sslPolicyErrors, chainStatus, alertToken);
         }
 
         private void CreateFatalHandshakeAlertToken(SslPolicyErrors sslPolicyErrors, X509Chain chain, ref ProtocolToken alertToken)
@@ -1349,6 +1358,27 @@ namespace System.Net.Security
                     NetEventSource.Log.RemoteCertUserDeclaredInvalid(this);
                 }
             }
+        }
+    }
+
+    /// <summary>
+    /// The outcome of verifying the remote certificate: whether it was accepted, why not, and
+    /// the alert to send when it was not. Returned rather than passed by reference because the
+    /// verification awaits its chain build.
+    /// </summary>
+    internal readonly struct CertificateVerificationResult
+    {
+        internal bool Success { get; }
+        internal SslPolicyErrors SslPolicyErrors { get; }
+        internal X509ChainStatusFlags ChainStatus { get; }
+        internal ProtocolToken AlertToken { get; }
+
+        internal CertificateVerificationResult(bool success, SslPolicyErrors sslPolicyErrors, X509ChainStatusFlags chainStatus, ProtocolToken alertToken)
+        {
+            Success = success;
+            SslPolicyErrors = sslPolicyErrors;
+            ChainStatus = chainStatus;
+            AlertToken = alertToken;
         }
     }
 

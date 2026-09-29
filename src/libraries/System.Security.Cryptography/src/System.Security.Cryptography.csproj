@@ -1140,9 +1140,12 @@
     <Compile Include="System\Security\Cryptography\X509Certificates\ManagedCertificateFinder.cs" />
     <Compile Include="System\Security\Cryptography\X509Certificates\OpenSslCachedDirectoryStoreProvider.cs" />
     <Compile Include="System\Security\Cryptography\X509Certificates\OpenSslCachedSystemStoreProvider.cs" />
+    <Compile Include="System\Security\Cryptography\X509Certificates\BoundedMruCache.cs" />
     <Compile Include="System\Security\Cryptography\X509Certificates\OpenSslCertificateAssetDownloader.cs" />
     <Compile Include="System\Security\Cryptography\X509Certificates\OpenSslCertificateFinder.cs" />
     <Compile Include="System\Security\Cryptography\X509Certificates\OpenSslCrlCache.cs" />
+    <Compile Include="System\Security\Cryptography\X509Certificates\OpenSslIssuerCache.cs" />
+    <Compile Include="System\Security\Cryptography\X509Certificates\OpenSslOcspCache.cs" />
     <Compile Include="System\Security\Cryptography\X509Certificates\OpenSslDirectoryBasedStoreProvider.cs" />
     <Compile Include="System\Security\Cryptography\X509Certificates\OpenSslExportProvider.cs" />
     <Compile Include="System\Security\Cryptography\X509Certificates\OpenSslPkcsFormatReader.cs" />

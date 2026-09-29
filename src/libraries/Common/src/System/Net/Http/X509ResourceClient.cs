@@ -28,19 +28,32 @@ namespace System.Net.Http
 
         internal static byte[]? DownloadAsset(string uri, TimeSpan downloadTimeout)
         {
-            Task<byte[]?> task = DownloadAssetCore(uri, downloadTimeout, async: false);
+            Task<byte[]?> task = DownloadAssetCore(uri, downloadTimeout, async: false, CancellationToken.None);
             Debug.Assert(task.IsCompletedSuccessfully);
             return task.Result;
         }
 
         internal static Task<byte[]?> DownloadAssetAsync(string uri, TimeSpan downloadTimeout)
         {
-            return DownloadAssetCore(uri, downloadTimeout, async: true);
+            return DownloadAssetCore(uri, downloadTimeout, async: true, CancellationToken.None);
         }
 
-        private static async Task<byte[]?> DownloadAssetCore(string uri, TimeSpan downloadTimeout, bool async)
+        /// <summary>
+        /// Downloads an asset, giving up after <paramref name="downloadTimeout"/> or when
+        /// <paramref name="cancellationToken"/> is signalled. A timeout, like any other download
+        /// failure, yields null; the caller's cancellation throws <see cref="OperationCanceledException"/>.
+        /// </summary>
+        internal static Task<byte[]?> DownloadAssetAsync(string uri, TimeSpan downloadTimeout, CancellationToken cancellationToken)
         {
-            if (s_downloadBytes is null)
+            return DownloadAssetCore(uri, downloadTimeout, async: true, cancellationToken);
+        }
+
+        private static async Task<byte[]?> DownloadAssetCore(string uri, TimeSpan downloadTimeout, bool async, CancellationToken cancellationToken)
+        {
+            // A synchronous download would block a WASI guest's only thread on I/O that the
+            // host completes asynchronously, so a guest fetches only through the asynchronous
+            // entry and otherwise builds from the certificates it has, as with no client.
+            if (s_downloadBytes is null || (!async && OperatingSystem.IsWasi()))
             {
                 ReportNoClient();
 
@@ -58,7 +71,18 @@ namespace System.Net.Http
 
             ReportDownloadStart(totalMillis, uri);
 
-            CancellationTokenSource? cts = totalMillis > int.MaxValue ? null : new CancellationTokenSource((int)totalMillis);
+            CancellationTokenSource? cts = null;
+
+            if (totalMillis <= int.MaxValue || cancellationToken.CanBeCanceled)
+            {
+                cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+
+                if (totalMillis <= int.MaxValue)
+                {
+                    cts.CancelAfter((int)totalMillis);
+                }
+            }
+
             byte[]? ret = null;
 
             try
@@ -67,7 +91,8 @@ namespace System.Net.Http
                 await ((Task)task).ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
                 if (task.IsCompletedSuccessfully)
                 {
-                    return task.Result;
+                    ret = task.Result;
+                    return ret;
                 }
             }
             catch { }
@@ -77,6 +102,10 @@ namespace System.Net.Http
 
                 ReportDownloadStop(ret?.Length ?? 0);
             }
+
+            // The caller's own cancellation is theirs to observe; every other failure, the
+            // timeout included, is a download that did not happen.
+            cancellationToken.ThrowIfCancellationRequested();
 
             return null;
         }
@@ -150,17 +179,15 @@ namespace System.Net.Http
 
         private static Func<string, CancellationToken, bool, Task<byte[]?>>? CreateDownloadBytesFunc()
         {
-            // A chain's authority-information fetch would reach the network
-            // through wasi:http, which a guest here cannot import; chains
-            // build from the certificates supplied, as with no client.
-            if (OperatingSystem.IsWasi()) return null;
             try
             {
                 // Use reflection to access System.Net.Http:
                 // Since System.Net.Http.dll explicitly depends on System.Security.Cryptography.X509Certificates.dll,
                 // the latter can't in turn have an explicit dependency on the former.
 
-                // Get the relevant types needed.
+                // Get the relevant types needed. Task<HttpResponseMessage>.Result stays on
+                // reflection: an UnsafeAccessor whose target is a generic instantiation crashes
+                // the ILC scanner's constraint check.
                 Type? taskOfHttpResponseMessageType = Type.GetType(TaskOfHttpResponseMessageTypeName, throwOnError: false);
 
                 PropertyInfo? taskResultProperty = taskOfHttpResponseMessageType?.GetProperty("Result");

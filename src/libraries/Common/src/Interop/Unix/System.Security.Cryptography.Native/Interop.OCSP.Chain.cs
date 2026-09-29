@@ -52,14 +52,20 @@ internal static partial class Interop
             SafeX509StoreCtxHandle ctx,
             SafeOcspRequestHandle req,
             SafeOcspResponseHandle resp,
-            string cachePath,
+            string? cachePath,
             int chainDepth);
 
+        /// <summary>
+        /// Verifies <paramref name="resp"/> against the chain element at <paramref name="chainDepth"/>.
+        /// <see cref="SafeOcspRequestHandle.InvalidHandle"/> for <paramref name="req"/> skips the nonce
+        /// check, as for a response that was not just requested; a null <paramref name="cachePath"/>
+        /// keeps a cacheable response out of the on-disk cache.
+        /// </summary>
         internal static X509VerifyStatusCode X509ChainVerifyOcsp(
             SafeX509StoreCtxHandle ctx,
             SafeOcspRequestHandle req,
             SafeOcspResponseHandle resp,
-            string cachePath,
+            string? cachePath,
             int chainDepth)
         {
             X509VerifyStatusCode response = (X509VerifyStatusCode)CryptoNative_X509ChainVerifyOcsp(ctx, req, resp, cachePath, chainDepth);

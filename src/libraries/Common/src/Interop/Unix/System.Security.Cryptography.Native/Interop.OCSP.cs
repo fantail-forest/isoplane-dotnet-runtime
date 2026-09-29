@@ -97,6 +97,9 @@ namespace System.Security.Cryptography.X509Certificates
 {
     internal sealed class SafeOcspRequestHandle : SafeHandleZeroOrMinusOneIsInvalid
     {
+        /// <summary>Marshals as a null request: a response is verified without a nonce check.</summary>
+        internal static readonly SafeOcspRequestHandle InvalidHandle = new SafeOcspRequestHandle();
+
         public SafeOcspRequestHandle()
             : base(true)
         {

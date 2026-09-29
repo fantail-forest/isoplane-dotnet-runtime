@@ -3,13 +3,30 @@
 
 using System.Net.Security;
 using System.Security.Cryptography.X509Certificates;
+using System.Threading;
+using System.Threading.Tasks;
 using Microsoft.Win32.SafeHandles;
 
 namespace System.Net
 {
     internal static partial class CertificateValidationPal
     {
-        internal static SslPolicyErrors VerifyCertificateProperties(
+        // The Android chain engine retrieves for itself, so the verification completes synchronously.
+        internal static ValueTask<SslPolicyErrors> VerifyCertificatePropertiesAsync<TIOAdapter>(
+            SafeDeleteContext securityContext,
+            X509Chain chain,
+            X509Certificate2? remoteCertificate,
+            bool checkCertName,
+            bool isServer,
+            string? hostName,
+            CancellationToken cancellationToken)
+            where TIOAdapter : IReadWriteAdapter
+        {
+            return new ValueTask<SslPolicyErrors>(
+                VerifyCertificateProperties(securityContext, chain, remoteCertificate, checkCertName, isServer, hostName));
+        }
+
+        private static SslPolicyErrors VerifyCertificateProperties(
             SafeDeleteContext securityContext,
             X509Chain chain,
             X509Certificate2? remoteCertificate,
