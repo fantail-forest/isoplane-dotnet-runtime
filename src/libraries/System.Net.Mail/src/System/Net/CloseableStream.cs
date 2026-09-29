@@ -12,14 +12,26 @@ namespace System.Net
     {
         private readonly EventHandler? _onClose;
         private int _closed;
+        private readonly Func<object, CancellationToken, ValueTask>? _onCloseAsync;
 
-        internal ClosableStream(Stream stream, EventHandler? onClose) : base(stream)
+        internal ClosableStream(Stream stream, EventHandler? onClose, Func<object, CancellationToken, ValueTask>? onCloseAsync = null) : base(stream)
         {
             _onClose = onClose;
+            _onCloseAsync = onCloseAsync;
         }
 
         public override bool CanRead => BaseStream.CanRead;
         public override bool CanWrite => BaseStream.CanWrite;
+
+        internal override ValueTask CloseAsync(CancellationToken cancellationToken)
+        {
+            if (Interlocked.Increment(ref _closed) != 1)
+                return default;
+            if (_onCloseAsync != null)
+                return _onCloseAsync(this, cancellationToken);
+            _onClose?.Invoke(this, EventArgs.Empty);
+            return default;
+        }
 
         public override void Close()
         {

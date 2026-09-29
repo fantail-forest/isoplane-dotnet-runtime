@@ -168,7 +168,7 @@ namespace System.Net.Mime
                 PrepareHeaders(allowUnicode);
                 writer.WriteHeaders(Headers, allowUnicode);
 
-                Stream outputStream = writer.GetContentStream();
+                Stream outputStream = await writer.GetContentStreamAsync<TIOAdapter>(cancellationToken).ConfigureAwait(false);
                 outputStream = GetEncodedStream(outputStream);
 
                 ResetStream();
@@ -180,7 +180,7 @@ namespace System.Net.Mime
                     await TIOAdapter.WriteAsync(outputStream, buffer.AsMemory(0, read), cancellationToken).ConfigureAwait(false);
                 }
 
-                outputStream.Close();
+                await DelegatedStream.CloseStreamAsync<TIOAdapter>(outputStream, cancellationToken).ConfigureAwait(false);
             }
         }
 

@@ -4,6 +4,8 @@
 using System;
 using System.Collections.Specialized;
 using System.IO;
+using System.Threading.Tasks;
+using System.Threading;
 using System.Text;
 
 namespace System.Net.Mime
@@ -34,6 +36,25 @@ namespace System.Net.Mime
         }
 
         #region Cleanup
+
+        internal override async Task CloseAsync<TIOAdapter>(CancellationToken cancellationToken)
+        {
+            _bufferBuilder.Append("\r\n--"u8);
+            _bufferBuilder.Append(_boundaryBytes);
+            _bufferBuilder.Append("--\r\n"u8);
+            await FlushAsync<TIOAdapter>(cancellationToken).ConfigureAwait(false);
+            await DelegatedStream.CloseStreamAsync<TIOAdapter>(_stream, cancellationToken).ConfigureAwait(false);
+        }
+
+        protected override async ValueTask OnCloseAsync(object sender, CancellationToken cancellationToken)
+        {
+            if (_contentStream != sender)
+                return;
+            await _contentStream.FlushAsync(cancellationToken).ConfigureAwait(false);
+            _contentStream = null!;
+            _writeBoundary = true;
+            _isInContent = false;
+        }
 
         internal override void Close()
         {

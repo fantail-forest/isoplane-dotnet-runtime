@@ -3,6 +3,8 @@
 
 using System.Collections.Specialized;
 using System.IO;
+using System.Threading.Tasks;
+using System.Threading;
 using System.Net.Mail;
 using System.Runtime.ExceptionServices;
 
@@ -96,7 +98,10 @@ namespace System.Net.Mime
 
         #region Content
 
-        internal Stream GetContentStream()
+        internal Stream GetContentStream() =>
+            GetContentStreamAsync<SyncReadWriteAdapter>(CancellationToken.None).GetAwaiter().GetResult();
+
+        internal async Task<Stream> GetContentStreamAsync<TIOAdapter>(CancellationToken cancellationToken) where TIOAdapter : IReadWriteAdapter
         {
             if (_isInContent)
             {
@@ -108,9 +113,9 @@ namespace System.Net.Mime
             CheckBoundary();
 
             _bufferBuilder.Append("\r\n"u8);
-            Flush();
+            await FlushAsync<TIOAdapter>(cancellationToken).ConfigureAwait(false);
 
-            ClosableStream cs = new ClosableStream(new EightBitStream(_stream, _shouldEncodeLeadingDots), _onCloseHandler);
+            ClosableStream cs = new ClosableStream(new EightBitStream(_stream, _shouldEncodeLeadingDots), _onCloseHandler, OnCloseAsync);
             _contentStream = cs;
             return cs;
         }
@@ -127,6 +132,18 @@ namespace System.Net.Mime
                 _bufferBuilder.Reset();
             }
         }
+
+        protected async Task FlushAsync<TIOAdapter>(CancellationToken cancellationToken) where TIOAdapter : IReadWriteAdapter
+        {
+            if (_bufferBuilder.Length > 0)
+            {
+                await TIOAdapter.WriteAsync(_stream, _bufferBuilder.GetBuffer().AsMemory(0, _bufferBuilder.Length), cancellationToken).ConfigureAwait(false);
+                _bufferBuilder.Reset();
+            }
+        }
+
+        internal abstract Task CloseAsync<TIOAdapter>(CancellationToken cancellationToken) where TIOAdapter : IReadWriteAdapter;
+        protected abstract ValueTask OnCloseAsync(object sender, CancellationToken cancellationToken);
 
         internal abstract void Close();
 

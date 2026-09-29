@@ -142,6 +142,9 @@ namespace System.Net.Mail
             return (new MailWriter(_connection!.GetClosableStream(), encodeForTransport: true), failedRecipientExceptions);
         }
 
+        internal Task ReleaseConnectionAsync(CancellationToken cancellationToken) =>
+            _connection?.ReleaseConnectionAsync(cancellationToken) ?? Task.CompletedTask;
+
         internal void ReleaseConnection()
         {
             _connection?.ReleaseConnection();

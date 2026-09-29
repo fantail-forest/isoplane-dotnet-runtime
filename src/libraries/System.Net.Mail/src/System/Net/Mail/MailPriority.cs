@@ -260,7 +260,8 @@ namespace System.Net.Mail
             else
             {
                 // No content to write, just close the stream
-                writer.GetContentStream().Close();
+                var content = await writer.GetContentStreamAsync<TIOAdapter>(cancellationToken).ConfigureAwait(false);
+                await DelegatedStream.CloseStreamAsync<TIOAdapter>(content, cancellationToken).ConfigureAwait(false);
             }
         }
 

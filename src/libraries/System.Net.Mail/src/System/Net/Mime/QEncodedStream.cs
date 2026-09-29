@@ -55,6 +55,12 @@ namespace System.Net.Mime
         public override bool CanRead => BaseStream.CanRead;
         public override bool CanWrite => BaseStream.CanWrite;
 
+        internal override async ValueTask CloseAsync(CancellationToken cancellationToken)
+        {
+            await FlushInternalAsync(cancellationToken).ConfigureAwait(false);
+            await base.CloseAsync(cancellationToken).ConfigureAwait(false);
+        }
+
         public override void Close()
         {
             FlushInternal();

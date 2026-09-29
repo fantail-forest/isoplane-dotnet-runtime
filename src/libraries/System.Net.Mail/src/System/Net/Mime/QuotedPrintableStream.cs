@@ -84,6 +84,12 @@ namespace System.Net.Mime
 
         internal WriteStateInfoBase WriteState => _writeState ??= new WriteStateInfoBase(1024, null, null, _lineLength);
 
+        internal override async ValueTask CloseAsync(CancellationToken cancellationToken)
+        {
+            await FlushInternalAsync(cancellationToken).ConfigureAwait(false);
+            await base.CloseAsync(cancellationToken).ConfigureAwait(false);
+        }
+
         public override void Close()
         {
             FlushInternal();
