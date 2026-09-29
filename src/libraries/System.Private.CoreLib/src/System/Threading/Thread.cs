@@ -378,6 +378,10 @@ namespace System.Threading
         public static void Sleep(int millisecondsTimeout)
         {
             ArgumentOutOfRangeException.ThrowIfLessThan(millisecondsTimeout, Timeout.Infinite);
+            // A single-threaded WASI guest whose clock is the host's cannot
+            // wait inside a call; a sleep would spin until the host's budget
+            // ends it. A zero sleep is a yield and needs no wait.
+            if (OperatingSystem.IsWasi() && millisecondsTimeout != 0) throw new PlatformNotSupportedException();
             SleepInternal(millisecondsTimeout);
         }
 

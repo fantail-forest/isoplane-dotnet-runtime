@@ -33,6 +33,11 @@ namespace System.Threading
         {
             WasiEventLoop.PollWasiEventLoopUntilResolvedVoid(mainTask);
         }
+
+        internal static void RunWasiEventLoopOnce()
+        {
+            WasiEventLoop.RunOnceHostDriven();
+        }
 #endif // TARGET_WASI
 
         // the closest analog to Sleep(0) on Unix is sched_yield

@@ -19,6 +19,22 @@ namespace System.Threading
         private static bool s_checkScheduled;
         private static Pollable? s_resolvedPollable;
         private static Task? s_mainTask;
+        // A host that owns every wake source drives the loop: its poll never
+        // blocks, it runs the loop once after delivering readiness, and a check
+        // that found nothing ready must not queue another check, or the loop
+        // would spin until the host reports readiness.
+        private static bool s_hostDriven;
+
+        /// <summary>
+        /// Runs one round of the loop for a host that drives it: polls every
+        /// registration once and dispatches the work that became ready.
+        /// </summary>
+        internal static void RunOnceHostDriven()
+        {
+            s_hostDriven = true;
+            ScheduleCheck();
+            ThreadPoolWorkQueue.Dispatch();
+        }
 
         internal static Task RegisterWasiPollableHandle(int handle, bool ownsPollable, CancellationToken cancellationToken)
         {
@@ -108,7 +124,11 @@ namespace System.Threading
             s_checkScheduled = false;
 
             var holders = new List<PollableHolder>(s_pollables.Count);
-            var hooks = new List<PollHook>(s_pollables.Count);
+            // one entry per pending pollable a hook contributed, for resolution
+            var hooks = new List<PollHook>(s_hooks.Count);
+            // one entry per live hook, for retention: a hook that contributes
+            // several pollables is registered once, not once per pollable
+            var liveHooks = new List<PollHook>(s_hooks.Count);
             var pending = new List<Pollable>(s_pollables.Count);
             for (int i = 0; i < s_pollables.Count; i++)
             {
@@ -124,6 +144,7 @@ namespace System.Threading
                 var hook = s_hooks[i];
                 if (!hook.isDisposed)
                 {
+                    liveHooks.Add(hook);
                     var handles = hook.BeforePollHook(hook.State);
                     for (int h = 0; h < handles.Count; h++)
                     {
@@ -144,7 +165,9 @@ namespace System.Threading
                 // if there is CPU-bound work to do, we should not block on PollInterop.Poll below
                 // so we will append pollable resolved in 0ms
                 // in effect, the PollInterop.Poll would not block us
-                if (ThreadPool.PendingWorkItemCount > 0 || (s_mainTask != null && s_mainTask.IsCompleted))
+                // (a driving host refuses a poll that would block, so its poll
+                // always carries the resolved pollable and reports readiness only)
+                if (s_hostDriven || ThreadPool.PendingWorkItemCount > 0 || (s_mainTask != null && s_mainTask.IsCompleted))
                 {
                     s_resolvedPollable ??= MonotonicClockInterop.SubscribeDuration(0);
                     resolvedPollableIndex = pending.Count;
@@ -181,16 +204,19 @@ namespace System.Threading
                 }
             }
 
-            for (int i = 0; i < hooks.Count; i++)
+            for (int i = 0; i < liveHooks.Count; i++)
             {
-                PollHook hook = hooks[i];
+                PollHook hook = liveHooks[i];
                 if (!hook.isDisposed)
                 {
                     s_hooks.Add(hook);
                 }
             }
 
-            ScheduleCheck();
+            if (!s_hostDriven)
+            {
+                ScheduleCheck();
+            }
         }
 
         private sealed class PollableHolder
