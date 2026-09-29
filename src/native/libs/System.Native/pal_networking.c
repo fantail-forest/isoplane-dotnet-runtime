@@ -3419,32 +3419,225 @@ static int32_t WaitForSocketEventsInner(int32_t port, SocketEvent* buffer, int32
 #endif  // !HAVE_KQUEUE !HAVE_EPOLL
 
 #if defined(TARGET_WASI)
-// from https://github.com/WebAssembly/wasi-libc/blob/230d4be6c54bec93181050f9e25c87150506bdd0/libc-bottom-half/headers/private/wasi/descriptor_table.h
-bool descriptor_table_get_ref(int fd, void **entry);
+#include <poll.h>
+#include <wasi/wasip2.h>
 
-// this method is invading private implementation details of wasi-libc
-// we could get rid of it when https://github.com/WebAssembly/wasi-libc/issues/542 is resolved
-// or after WASIp3 promises are implemented, whatever comes first
-int32_t SystemNative_GetWasiSocketDescriptor(intptr_t socket, void** entry)
+// A socket's readiness is the set of wasi:io/poll pollables libc would wait
+// on for it. libc computes that set inside poll() and hands it to poll_poll,
+// its wrapper for wasi:io/poll.poll; linking with --wrap=poll_poll routes
+// that call here, so the set is observed through libc's public poll() rather
+// than through its private descriptor layout. Outside a capture the wrapper
+// is transparent.
+typedef struct
 {
-    if (entry == NULL)
+    uint32_t* handles;
+    int32_t capacity;
+    int32_t count;
+    bool active;
+    bool overflow;
+} WasiPollCapture;
+
+static WasiPollCapture g_wasiPollCapture;
+
+extern void __real_poll_poll(poll_list_borrow_pollable_t* list, wasip2_list_u32_t* ready);
+
+void __wrap_poll_poll(poll_list_borrow_pollable_t* list, wasip2_list_u32_t* ready)
+{
+    if (!g_wasiPollCapture.active)
     {
-        return Error_EFAULT;
+        __real_poll_poll(list, ready);
+        return;
     }
 
-    int fd = ToFileDescriptor(socket);
-    if(!descriptor_table_get_ref(fd, entry))
+    for (size_t i = 0; i < list->len; i++)
+    {
+        if (g_wasiPollCapture.count < g_wasiPollCapture.capacity)
+        {
+            g_wasiPollCapture.handles[g_wasiPollCapture.count++] = (uint32_t)list->ptr[i].__handle;
+        }
+        else
+        {
+            g_wasiPollCapture.overflow = true;
+        }
+    }
+    // Nothing is waited on: the caller only wanted the registrations.
+    ready->ptr = NULL;
+    ready->len = 0;
+}
+
+int32_t SystemNative_GetWasiSocketReadiness(intptr_t socket, uint32_t* handles, int32_t capacity, int32_t* count, int32_t* events)
+{
+    if (handles == NULL || count == NULL || events == NULL || capacity < 0)
     {
         return Error_EFAULT;
     }
+    if (g_wasiPollCapture.active)
+    {
+        // poll() never re-enters this function, so a live capture is a bug in
+        // the caller rather than a state to recover from.
+        return Error_EBUSY;
+    }
+
+    *count = 0;
+    *events = SocketEvents_SA_NONE;
+
+    struct pollfd descriptor;
+    descriptor.fd = ToFileDescriptor(socket);
+    descriptor.events = POLLRDNORM | POLLWRNORM;
+    descriptor.revents = 0;
+
+    g_wasiPollCapture.handles = handles;
+    g_wasiPollCapture.capacity = capacity;
+    g_wasiPollCapture.count = 0;
+    g_wasiPollCapture.overflow = false;
+    g_wasiPollCapture.active = true;
+    // A negative timeout keeps libc from adding a timer pollable of its own;
+    // the wrapped poll_poll returns without waiting.
+    int result = poll(&descriptor, 1, -1);
+    int error = errno;
+    g_wasiPollCapture.active = false;
+
+    if (result < 0)
+    {
+        return SystemNative_ConvertErrorPlatformToPal(error);
+    }
+    if ((descriptor.revents & POLLNVAL) != 0)
+    {
+        return Error_EBADF;
+    }
+    if (g_wasiPollCapture.overflow)
+    {
+        return Error_ENOBUFS;
+    }
+
+    *count = g_wasiPollCapture.count;
+
+    // libc reports a socket whose connection already failed as ready with
+    // the requested events and registers no pollable for it; a live socket
+    // registers pollables and reports nothing until they resolve.
+    int32_t ready = SocketEvents_SA_NONE;
+    if ((descriptor.revents & (POLLERR | POLLHUP)) != 0 || (*count == 0 && descriptor.revents != 0))
+    {
+        ready |= SocketEvents_SA_ERROR;
+    }
+    else
+    {
+        if ((descriptor.revents & (POLLRDNORM | POLLIN)) != 0)
+        {
+            ready |= SocketEvents_SA_READ;
+        }
+        if ((descriptor.revents & (POLLWRNORM | POLLOUT)) != 0)
+        {
+            ready |= SocketEvents_SA_WRITE;
+        }
+    }
+    *events = ready;
     return Error_SUCCESS;
 }
+
+// Name resolution through wasi:sockets/ip-name-lookup, exposed as the
+// start/next/drop steps of the resolve-address-stream resource so that the
+// managed caller can await the stream's pollable instead of blocking in
+// getaddrinfo. Errors are returned as the WASI error code plus one.
+
+int32_t SystemNative_WasiResolveAddressesStart(const uint8_t* name, int32_t length, int32_t* stream, int32_t* pollable)
+{
+    if (name == NULL || stream == NULL || pollable == NULL || length < 0)
+    {
+        return Error_EFAULT;
+    }
+
+    instance_network_own_network_t network = instance_network_instance_network();
+    wasip2_string_t text;
+    text.ptr = (uint8_t*)name;
+    text.len = (size_t)length;
+    ip_name_lookup_own_resolve_address_stream_t addresses;
+    ip_name_lookup_error_code_t error;
+    if (!ip_name_lookup_resolve_addresses((ip_name_lookup_borrow_network_t){ network.__handle }, &text, &addresses, &error))
+    {
+        return (int32_t)error + 1;
+    }
+
+    *stream = addresses.__handle;
+    *pollable = ip_name_lookup_method_resolve_address_stream_subscribe(
+        ip_name_lookup_borrow_resolve_address_stream(addresses)).__handle;
+    return 0;
+}
+
+int32_t SystemNative_WasiResolveNextAddress(int32_t stream, uint8_t* bytes, int32_t capacity)
+{
+    if (bytes == NULL || capacity < 16)
+    {
+        return -(Error_EFAULT + 1);
+    }
+
+    ip_name_lookup_option_ip_address_t address;
+    ip_name_lookup_error_code_t error;
+    if (!ip_name_lookup_method_resolve_address_stream_resolve_next_address(
+            (ip_name_lookup_borrow_resolve_address_stream_t){ stream }, &address, &error))
+    {
+        return -((int32_t)error + 1);
+    }
+    if (!address.is_some)
+    {
+        return 0;
+    }
+    if (address.val.tag == NETWORK_IP_ADDRESS_IPV4)
+    {
+        bytes[0] = address.val.val.ipv4.f0;
+        bytes[1] = address.val.val.ipv4.f1;
+        bytes[2] = address.val.val.ipv4.f2;
+        bytes[3] = address.val.val.ipv4.f3;
+        return 4;
+    }
+
+    uint16_t segments[8] = {
+        address.val.val.ipv6.f0, address.val.val.ipv6.f1, address.val.val.ipv6.f2, address.val.val.ipv6.f3,
+        address.val.val.ipv6.f4, address.val.val.ipv6.f5, address.val.val.ipv6.f6, address.val.val.ipv6.f7
+    };
+    for (int index = 0; index < 8; ++index)
+    {
+        bytes[index * 2] = (uint8_t)(segments[index] >> 8);
+        bytes[index * 2 + 1] = (uint8_t)segments[index];
+    }
+    return 16;
+}
+
+void SystemNative_WasiResolveAddressesDrop(int32_t stream)
+{
+    ip_name_lookup_resolve_address_stream_drop_own((ip_name_lookup_own_resolve_address_stream_t){ stream });
+}
 #else
-int32_t SystemNative_GetWasiSocketDescriptor(intptr_t socket, void** entry)
+int32_t SystemNative_GetWasiSocketReadiness(intptr_t socket, uint32_t* handles, int32_t capacity, int32_t* count, int32_t* events)
 {
     (void)socket;
-    (void)entry;
+    (void)handles;
+    (void)capacity;
+    (void)count;
+    (void)events;
     return Error_ENOSYS;
+}
+
+int32_t SystemNative_WasiResolveAddressesStart(const uint8_t* name, int32_t length, int32_t* stream, int32_t* pollable)
+{
+    (void)name;
+    (void)length;
+    (void)stream;
+    (void)pollable;
+    return Error_ENOSYS;
+}
+
+int32_t SystemNative_WasiResolveNextAddress(int32_t stream, uint8_t* bytes, int32_t capacity)
+{
+    (void)stream;
+    (void)bytes;
+    (void)capacity;
+    return -(Error_ENOSYS + 1);
+}
+
+void SystemNative_WasiResolveAddressesDrop(int32_t stream)
+{
+    (void)stream;
 }
 #endif  // TARGET_WASI
 
