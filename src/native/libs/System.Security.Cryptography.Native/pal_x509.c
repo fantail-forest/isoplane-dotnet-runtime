@@ -1245,7 +1245,8 @@ static int32_t X509ChainVerifyOcsp(X509_STORE_CTX* storeCtx, X509* subject, X509
     int canCache = 0;
     ret = CheckOcsp(req, resp, subject, issuer, storeCtx, &canCache);
 
-    if (canCache)
+    // A caller with nowhere to persist passes no cache path and keeps the response itself.
+    if (canCache && cachePath != NULL)
     {
         char* fullPath = BuildOcspCacheFilename(cachePath, subject);
 
@@ -1301,7 +1302,8 @@ int32_t CryptoNative_X509ChainHasStapledOcsp(X509_STORE_CTX* storeCtx)
 int32_t
 CryptoNative_X509ChainVerifyOcsp(X509_STORE_CTX* storeCtx, OCSP_REQUEST* req, OCSP_RESPONSE* resp, char* cachePath, int chainDepth)
 {
-    if (storeCtx == NULL || req == NULL || resp == NULL)
+    // A NULL request verifies a stored response, whose nonce (if any) matched an earlier request.
+    if (storeCtx == NULL || resp == NULL)
     {
         return -1;
     }

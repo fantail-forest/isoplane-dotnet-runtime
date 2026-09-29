@@ -3,6 +3,8 @@
 
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Threading;
+using System.Threading.Tasks;
 
 namespace System.Security.Cryptography.X509Certificates
 {
@@ -41,37 +43,26 @@ namespace System.Security.Cryptography.X509Certificates
             TimeSpan timeout,
             bool disableAia)
         {
-            if (OpenSslX509ChainEventSource.Log.IsEnabled())
-            {
-                OpenSslX509ChainEventSource.Log.ChainStart();
-            }
+            ValueTask<IChainPal?> build = BuildChainCoreAsync(
+                cert,
+                extraStore,
+                applicationPolicy,
+                certificatePolicy,
+                revocationMode,
+                revocationFlag,
+                customTrustStore,
+                trustMode,
+                verificationTime,
+                timeout,
+                disableAia,
+                async: false,
+                CancellationToken.None);
 
-            try
-            {
-                return BuildChainCore(
-                    useMachineContext,
-                    cert,
-                    extraStore,
-                    applicationPolicy,
-                    certificatePolicy,
-                    revocationMode,
-                    revocationFlag,
-                    customTrustStore,
-                    trustMode,
-                    verificationTime,
-                    timeout,
-                    disableAia);
-            }
-            finally
-            {
-                if (OpenSslX509ChainEventSource.Log.IsEnabled())
-                {
-                    OpenSslX509ChainEventSource.Log.ChainStop();
-                }
-            }
+            Debug.Assert(build.IsCompleted, "A synchronous chain build must not yield.");
+            return build.GetAwaiter().GetResult();
         }
 
-        private static OpenSslX509ChainProcessor? BuildChainCore(
+        internal static partial ValueTask<IChainPal?> BuildChainAsync(
             bool useMachineContext,
             ICertificatePal cert,
             X509Certificate2Collection? extraStore,
@@ -83,7 +74,87 @@ namespace System.Security.Cryptography.X509Certificates
             X509ChainTrustMode trustMode,
             DateTime verificationTime,
             TimeSpan timeout,
-            bool disableAia)
+            bool disableAia,
+            CancellationToken cancellationToken)
+        {
+            return BuildChainCoreAsync(
+                cert,
+                extraStore,
+                applicationPolicy,
+                certificatePolicy,
+                revocationMode,
+                revocationFlag,
+                customTrustStore,
+                trustMode,
+                verificationTime,
+                timeout,
+                disableAia,
+                async: true,
+                cancellationToken);
+        }
+
+        // One sequence serves both entries: with async false every retrieval completes
+        // synchronously (on WASI, without a network), so the ValueTask is already complete.
+        private static async ValueTask<IChainPal?> BuildChainCoreAsync(
+            ICertificatePal cert,
+            X509Certificate2Collection? extraStore,
+            OidCollection? applicationPolicy,
+            OidCollection? certificatePolicy,
+            X509RevocationMode revocationMode,
+            X509RevocationFlag revocationFlag,
+            X509Certificate2Collection? customTrustStore,
+            X509ChainTrustMode trustMode,
+            DateTime verificationTime,
+            TimeSpan timeout,
+            bool disableAia,
+            bool async,
+            CancellationToken cancellationToken)
+        {
+            if (OpenSslX509ChainEventSource.Log.IsEnabled())
+            {
+                OpenSslX509ChainEventSource.Log.ChainStart();
+            }
+
+            try
+            {
+                return await BuildChainCore(
+                    cert,
+                    extraStore,
+                    applicationPolicy,
+                    certificatePolicy,
+                    revocationMode,
+                    revocationFlag,
+                    customTrustStore,
+                    trustMode,
+                    verificationTime,
+                    timeout,
+                    disableAia,
+                    async,
+                    cancellationToken).ConfigureAwait(false);
+            }
+            finally
+            {
+                if (OpenSslX509ChainEventSource.Log.IsEnabled())
+                {
+                    OpenSslX509ChainEventSource.Log.ChainStop();
+                }
+            }
+        }
+
+        private static async ValueTask<OpenSslX509ChainProcessor?> BuildChainCore(
+            ICertificatePal cert,
+            X509Certificate2Collection? extraStore,
+            OidCollection? applicationPolicy,
+            OidCollection? certificatePolicy,
+            X509RevocationMode revocationMode,
+            X509RevocationFlag revocationFlag,
+            X509Certificate2Collection? customTrustStore,
+            X509ChainTrustMode trustMode,
+            DateTime verificationTime,
+            TimeSpan timeout,
+            bool disableAia,
+            bool async,
+            CancellationToken cancellationToken)
         {
             if (timeout == TimeSpan.Zero)
             {
@@ -121,73 +192,84 @@ namespace System.Security.Cryptography.X509Certificates
                 verificationTime,
                 downloadTimeout);
 
-            Interop.Crypto.X509VerifyStatusCode status = chainPal.FindFirstChain(extraStore);
-
-            if (OpenSslX509ChainEventSource.Log.IsEnabled())
+            try
             {
-                OpenSslX509ChainEventSource.Log.FindFirstChainFinished(status);
-            }
+                Interop.Crypto.X509VerifyStatusCode status = chainPal.FindFirstChain(extraStore);
 
-            if (!OpenSslX509ChainProcessor.IsCompleteChain(status))
-            {
-                if (disableAia)
+                if (OpenSslX509ChainEventSource.Log.IsEnabled())
                 {
-                    if (OpenSslX509ChainEventSource.Log.IsEnabled())
-                    {
-                        OpenSslX509ChainEventSource.Log.AiaDisabled();
-                    }
+                    OpenSslX509ChainEventSource.Log.FindFirstChainFinished(status);
                 }
-                else
+
+                if (!OpenSslX509ChainProcessor.IsCompleteChain(status))
                 {
-                    List<X509Certificate2>? tmp = null;
-                    status = chainPal.FindChainViaAia(ref tmp);
-
-                    if (OpenSslX509ChainEventSource.Log.IsEnabled())
-                    {
-                        OpenSslX509ChainEventSource.Log.FindChainViaAiaFinished(status, tmp?.Count ?? 0);
-                    }
-
-                    if (tmp != null)
-                    {
-                        if (status == Interop.Crypto.X509VerifyStatusCode.X509_V_OK)
-                        {
-                            SaveIntermediateCertificates(tmp);
-                        }
-
-                        foreach (X509Certificate2 downloaded in tmp)
-                        {
-                            downloaded.Dispose();
-                        }
-                    }
-                }
-            }
-
-            chainPal.CommitToChain();
-
-            if (revocationMode != X509RevocationMode.NoCheck)
-            {
-                if (OpenSslX509ChainProcessor.IsCompleteChain(status))
-                {
-                    // Checking the validity period for the certificates in the chain is done after the
-                    // check for a trusted root, so accept expired (or not yet valid) as acceptable for
-                    // processing revocation.
-                    if (status != Interop.Crypto.X509VerifyStatusCode.X509_V_OK &&
-                        status != Interop.Crypto.X509VerifyStatusCodeUniversal.X509_V_ERR_CERT_NOT_YET_VALID &&
-                        status != Interop.Crypto.X509VerifyStatusCodeUniversal.X509_V_ERR_CERT_HAS_EXPIRED)
+                    if (disableAia)
                     {
                         if (OpenSslX509ChainEventSource.Log.IsEnabled())
                         {
-                            OpenSslX509ChainEventSource.Log.UntrustedChainWithRevocation();
+                            OpenSslX509ChainEventSource.Log.AiaDisabled();
+                        }
+                    }
+                    else
+                    {
+                        OpenSslX509ChainProcessor.AiaResult aia =
+                            await chainPal.FindChainViaAiaAsync(async, cancellationToken).ConfigureAwait(false);
+
+                        status = aia.Status;
+
+                        if (OpenSslX509ChainEventSource.Log.IsEnabled())
+                        {
+                            OpenSslX509ChainEventSource.Log.FindChainViaAiaFinished(status, aia.Downloaded?.Count ?? 0);
                         }
 
-                        revocationMode = X509RevocationMode.NoCheck;
+                        if (aia.Downloaded != null)
+                        {
+                            if (status == Interop.Crypto.X509VerifyStatusCode.X509_V_OK)
+                            {
+                                SaveIntermediateCertificates(aia.Downloaded);
+                            }
+
+                            foreach (X509Certificate2 downloaded in aia.Downloaded)
+                            {
+                                downloaded.Dispose();
+                            }
+                        }
                     }
-
-                    chainPal.ProcessRevocation(revocationMode, revocationFlag);
                 }
-            }
 
-            chainPal.Finish(applicationPolicy, certificatePolicy);
+                chainPal.CommitToChain();
+
+                if (revocationMode != X509RevocationMode.NoCheck)
+                {
+                    if (OpenSslX509ChainProcessor.IsCompleteChain(status))
+                    {
+                        // Checking the validity period for the certificates in the chain is done after the
+                        // check for a trusted root, so accept expired (or not yet valid) as acceptable for
+                        // processing revocation.
+                        if (status != Interop.Crypto.X509VerifyStatusCode.X509_V_OK &&
+                            status != Interop.Crypto.X509VerifyStatusCodeUniversal.X509_V_ERR_CERT_NOT_YET_VALID &&
+                            status != Interop.Crypto.X509VerifyStatusCodeUniversal.X509_V_ERR_CERT_HAS_EXPIRED)
+                        {
+                            if (OpenSslX509ChainEventSource.Log.IsEnabled())
+                            {
+                                OpenSslX509ChainEventSource.Log.UntrustedChainWithRevocation();
+                            }
+
+                            revocationMode = X509RevocationMode.NoCheck;
+                        }
+
+                        await chainPal.ProcessRevocationAsync(revocationMode, revocationFlag, async, cancellationToken).ConfigureAwait(false);
+                    }
+                }
+
+                chainPal.Finish(applicationPolicy, certificatePolicy);
+            }
+            catch
+            {
+                // A build that a cancelled or failed retrieval abandoned still owns native state.
+                chainPal.Dispose();
+                throw;
+            }
 
 #if DEBUG
             if (chainPal.ChainElements!.Length > 0)
@@ -202,6 +284,21 @@ namespace System.Security.Cryptography.X509Certificates
 
         private static void SaveIntermediateCertificates(List<X509Certificate2> downloadedCerts)
         {
+            if (!OpenSslCrlCache.PersistsToDisk)
+            {
+                foreach (X509Certificate2 cert in downloadedCerts)
+                {
+                    if (OpenSslX509ChainEventSource.Log.IsEnabled())
+                    {
+                        OpenSslX509ChainEventSource.Log.CachingIntermediate(cert);
+                    }
+
+                    OpenSslIssuerCache.Add(cert);
+                }
+
+                return;
+            }
+
             using (var userIntermediate = new X509Store(StoreName.CertificateAuthority, StoreLocation.CurrentUser))
             {
                 try

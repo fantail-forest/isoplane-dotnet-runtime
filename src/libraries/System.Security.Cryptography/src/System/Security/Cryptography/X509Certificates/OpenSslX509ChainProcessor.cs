@@ -11,6 +11,8 @@ using System.Runtime.InteropServices;
 using System.Security.Cryptography.Asn1;
 using System.Security.Cryptography.X509Certificates.Asn1;
 using System.Text;
+using System.Threading;
+using System.Threading.Tasks;
 using Internal.Cryptography;
 using Microsoft.Win32.SafeHandles;
 using X509VerifyStatusCodeUniversal = Interop.Crypto.X509VerifyStatusCodeUniversal;
@@ -111,6 +113,7 @@ namespace System.Security.Cryptography.X509Certificates
                 untrusted = Interop.Crypto.NewX509Stack();
                 Interop.Crypto.X509StackAddMultiple(untrusted, s_userIntermediateStore.GetNativeCollection());
                 Interop.Crypto.X509StackAddMultiple(untrusted, s_userPersonalStore.GetNativeCollection());
+                OpenSslIssuerCache.AddToStack(untrusted);
 
                 store = GetTrustStore(trustMode, customTrustStore, untrusted, systemTrust);
 
@@ -212,126 +215,169 @@ namespace System.Security.Cryptography.X509Certificates
             }
         }
 
-        internal Interop.Crypto.X509VerifyStatusCode FindChainViaAia(
-            ref List<X509Certificate2>? downloadedCerts)
+        internal readonly struct AiaResult
+        {
+            internal Interop.Crypto.X509VerifyStatusCode Status { get; }
+
+            /// <summary>The downloaded issuers the completed chain uses, for the caller to dispose.</summary>
+            internal List<X509Certificate2>? Downloaded { get; }
+
+            internal AiaResult(Interop.Crypto.X509VerifyStatusCode status, List<X509Certificate2>? downloaded)
+            {
+                Status = status;
+                Downloaded = downloaded;
+            }
+        }
+
+        /// <summary>
+        /// Follows the current chain's missing issuer through its Authority Information Access
+        /// record, one download at a time, until the chain completes or no progress is possible.
+        /// With <paramref name="async"/> false every download completes synchronously.
+        /// </summary>
+        internal async ValueTask<AiaResult> FindChainViaAiaAsync(bool async, CancellationToken cancellationToken)
         {
             IntPtr lastCert = IntPtr.Zero;
-            SafeX509StoreCtxHandle storeCtx = _storeCtx;
+            List<X509Certificate2>? downloadedCerts = null;
 
             Interop.Crypto.X509VerifyStatusCode statusCode =
                 X509VerifyStatusCodeUniversal.X509_V_ERR_UNABLE_TO_GET_ISSUER_CERT;
 
             while (!IsCompleteChain(statusCode))
             {
-                using (SafeX509Handle currentCert = Interop.Crypto.X509StoreCtxGetCurrentCert(storeCtx))
+                string? issuerUri = GetCurrentCertIssuerUri(ref lastCert);
+
+                if (issuerUri == null)
                 {
-                    IntPtr currentHandle = currentCert.DangerousGetHandle();
-
-                    // No progress was made, give up.
-                    if (currentHandle == lastCert)
-                    {
-                        break;
-                    }
-
-                    lastCert = currentHandle;
-
-                    ArraySegment<byte> authorityInformationAccess =
-                        OpenSslX509CertificateReader.FindFirstExtension(
-                            currentCert,
-                            Oids.AuthorityInformationAccess);
-
-                    if (authorityInformationAccess.Count == 0)
-                    {
-                        if (OpenSslX509ChainEventSource.Log.IsEnabled())
-                        {
-                            OpenSslX509ChainEventSource.Log.NoAiaFound(currentCert);
-                        }
-
-                        break;
-                    }
-
-                    X509Certificate2? downloaded = DownloadCertificate(
-                        authorityInformationAccess,
-                        _downloadTimeout);
-
-                    // The AIA record is contained in a public structure, so no need to clear it.
-                    CryptoPool.Return(authorityInformationAccess.Array!, clearSize: 0);
-
-                    if (downloaded == null)
-                    {
-                        break;
-                    }
-
-                    downloadedCerts ??= new List<X509Certificate2>();
-
-                    AddToStackAndUpRef(downloaded.Handle, _untrustedLookup);
-                    downloadedCerts.Add(downloaded);
-
-                    Interop.Crypto.X509StoreCtxRebuildChain(storeCtx);
-                    statusCode = Interop.Crypto.X509StoreCtxGetError(storeCtx);
+                    break;
                 }
+
+                X509Certificate2? downloaded = async ?
+                    await OpenSslCertificateAssetDownloader.DownloadCertificateAsync(issuerUri, _downloadTimeout, cancellationToken).ConfigureAwait(false) :
+                    OpenSslCertificateAssetDownloader.DownloadCertificate(issuerUri, _downloadTimeout);
+
+                if (downloaded == null)
+                {
+                    break;
+                }
+
+                downloadedCerts ??= new List<X509Certificate2>();
+
+                AddToStackAndUpRef(downloaded.Handle, _untrustedLookup);
+                downloadedCerts.Add(downloaded);
+
+                Interop.Crypto.X509StoreCtxRebuildChain(_storeCtx);
+                statusCode = Interop.Crypto.X509StoreCtxGetError(_storeCtx);
             }
 
             if (statusCode == Interop.Crypto.X509VerifyStatusCode.X509_V_OK && downloadedCerts != null)
             {
-                using (SafeX509StackHandle chainStack = Interop.Crypto.X509StoreCtxGetChain(_storeCtx))
+                downloadedCerts = PruneUnusedDownloads(downloadedCerts);
+            }
+
+            return new AiaResult(statusCode, downloadedCerts);
+        }
+
+        /// <summary>
+        /// The caIssuers URI of the certificate the chain is stuck on, or null when the chain made
+        /// no progress since the last call or the certificate names no HTTP issuer. The extension
+        /// buffer is rented, so the URI is lifted out and the buffer returned before any download.
+        /// </summary>
+        private string? GetCurrentCertIssuerUri(ref IntPtr lastCert)
+        {
+            using (SafeX509Handle currentCert = Interop.Crypto.X509StoreCtxGetCurrentCert(_storeCtx))
+            {
+                IntPtr currentHandle = currentCert.DangerousGetHandle();
+
+                // No progress was made, give up.
+                if (currentHandle == lastCert)
                 {
-                    int chainSize = Interop.Crypto.GetX509StackFieldCount(chainStack);
-                    Span<IntPtr> tempChain = stackalloc IntPtr[DefaultChainCapacity];
-                    byte[]? tempChainRent = null;
+                    return null;
+                }
 
-                    if (chainSize <= tempChain.Length)
-                    {
-                        tempChain = tempChain.Slice(0, chainSize);
-                    }
-                    else
-                    {
-                        int targetSize = checked(chainSize * IntPtr.Size);
-                        tempChainRent = CryptoPool.Rent(targetSize);
-                        tempChain = MemoryMarshal.Cast<byte, IntPtr>(tempChainRent.AsSpan(0, targetSize));
-                    }
+                lastCert = currentHandle;
 
-                    for (int i = 0; i < chainSize; i++)
+                ArraySegment<byte> authorityInformationAccess =
+                    OpenSslX509CertificateReader.FindFirstExtension(
+                        currentCert,
+                        Oids.AuthorityInformationAccess);
+
+                if (authorityInformationAccess.Count == 0)
+                {
+                    if (OpenSslX509ChainEventSource.Log.IsEnabled())
                     {
-                        tempChain[i] = Interop.Crypto.GetX509StackField(chainStack, i);
+                        OpenSslX509ChainEventSource.Log.NoAiaFound(currentCert);
                     }
 
-                    // In the average case we never made it here.
-                    //
-                    // Given that we made it here, in the average remaining case
-                    // we are doing a one item for which will match in the second position
-                    // of an (on-average) 3 item collection.
-                    //
-                    // The only case where this loop really matters is if downloading the
-                    // certificate made an alternate chain better, which may have resulted in
-                    // an extra download and made the first one not be involved any longer. In
-                    // that case, it's a 2 item for loop matching against a three item set.
-                    //
-                    // So N*M is well contained.
-                    for (int i = downloadedCerts.Count - 1; i >= 0; i--)
-                    {
-                        X509Certificate2 downloadedCert = downloadedCerts[i];
+                    return null;
+                }
 
-                        if (!tempChain.Contains(downloadedCert.Handle))
-                        {
-                            downloadedCert.Dispose();
-                            downloadedCerts.RemoveAt(i);
-                        }
-                    }
+                string? issuerUri = FindHttpAiaRecord(authorityInformationAccess, Oids.CertificateAuthorityIssuers);
 
-                    if (downloadedCerts.Count == 0)
-                    {
-                        downloadedCerts = null;
-                    }
+                // The AIA record is contained in a public structure, so no need to clear it.
+                CryptoPool.Return(authorityInformationAccess.Array!, clearSize: 0);
 
-                    if (tempChainRent != null)
+                return issuerUri;
+            }
+        }
+
+        /// <summary>
+        /// Disposes and drops the downloaded certificates the completed chain did not use,
+        /// returning the remaining list or null when nothing remains.
+        /// </summary>
+        private List<X509Certificate2>? PruneUnusedDownloads(List<X509Certificate2> downloadedCerts)
+        {
+            using (SafeX509StackHandle chainStack = Interop.Crypto.X509StoreCtxGetChain(_storeCtx))
+            {
+                int chainSize = Interop.Crypto.GetX509StackFieldCount(chainStack);
+                Span<IntPtr> tempChain = stackalloc IntPtr[DefaultChainCapacity];
+                byte[]? tempChainRent = null;
+
+                if (chainSize <= tempChain.Length)
+                {
+                    tempChain = tempChain.Slice(0, chainSize);
+                }
+                else
+                {
+                    int targetSize = checked(chainSize * IntPtr.Size);
+                    tempChainRent = CryptoPool.Rent(targetSize);
+                    tempChain = MemoryMarshal.Cast<byte, IntPtr>(tempChainRent.AsSpan(0, targetSize));
+                }
+
+                for (int i = 0; i < chainSize; i++)
+                {
+                    tempChain[i] = Interop.Crypto.GetX509StackField(chainStack, i);
+                }
+
+                // In the average case we never made it here.
+                //
+                // Given that we made it here, in the average remaining case
+                // we are doing a one item for which will match in the second position
+                // of an (on-average) 3 item collection.
+                //
+                // The only case where this loop really matters is if downloading the
+                // certificate made an alternate chain better, which may have resulted in
+                // an extra download and made the first one not be involved any longer. In
+                // that case, it's a 2 item for loop matching against a three item set.
+                //
+                // So N*M is well contained.
+                for (int i = downloadedCerts.Count - 1; i >= 0; i--)
+                {
+                    X509Certificate2 downloadedCert = downloadedCerts[i];
+
+                    if (!tempChain.Contains(downloadedCert.Handle))
                     {
-                        CryptoPool.Return(tempChainRent);
+                        downloadedCert.Dispose();
+                        downloadedCerts.RemoveAt(i);
                     }
+                }
+
+                if (tempChainRent != null)
+                {
+                    CryptoPool.Return(tempChainRent);
                 }
             }
 
-            return statusCode;
+            return downloadedCerts.Count == 0 ? null : downloadedCerts;
         }
 
         internal void CommitToChain()
@@ -351,9 +397,16 @@ namespace System.Security.Cryptography.X509Certificates
             s_userIntermediateStore.DoRefresh();
         }
 
-        internal void ProcessRevocation(
+        /// <summary>
+        /// Checks revocation for the chain as committed: CRLs first, then OCSP where a CRL left
+        /// the status unknown. With <paramref name="async"/> false every download completes
+        /// synchronously.
+        /// </summary>
+        internal async ValueTask ProcessRevocationAsync(
             X509RevocationMode revocationMode,
-            X509RevocationFlag revocationFlag)
+            X509RevocationFlag revocationFlag,
+            bool async,
+            CancellationToken cancellationToken)
         {
             int chainSize;
             int revocationSize;
@@ -397,12 +450,25 @@ namespace System.Security.Cryptography.X509Certificates
                             using (SafeX509Handle cert =
                                 Interop.Crypto.X509UpRef(Interop.Crypto.GetX509StackField(chainStack, i)))
                             {
-                                OpenSslCrlCache.AddCrlForCertificate(
-                                    cert,
-                                    _store,
-                                    revocationMode,
-                                    _verificationTime,
-                                    _downloadTimeout);
+                                if (async)
+                                {
+                                    await OpenSslCrlCache.AddCrlForCertificateAsync(
+                                        cert,
+                                        _store,
+                                        revocationMode,
+                                        _verificationTime,
+                                        _downloadTimeout,
+                                        cancellationToken).ConfigureAwait(false);
+                                }
+                                else
+                                {
+                                    OpenSslCrlCache.AddCrlForCertificate(
+                                        cert,
+                                        _store,
+                                        revocationMode,
+                                        _verificationTime,
+                                        _downloadTimeout);
+                                }
                             }
                         }
                     }
@@ -423,7 +489,7 @@ namespace System.Security.Cryptography.X509Certificates
             // or clearing an unwanted root revocation flag.
             if (errorCode != Interop.Crypto.X509VerifyStatusCode.X509_V_OK)
             {
-                FinishRevocation(revocationMode, revocationFlag, chainSize);
+                await FinishRevocationAsync(revocationMode, revocationFlag, chainSize, async, cancellationToken).ConfigureAwait(false);
             }
 
             if (OpenSslX509ChainEventSource.Log.IsEnabled())
@@ -432,10 +498,14 @@ namespace System.Security.Cryptography.X509Certificates
             }
         }
 
-        private void FinishRevocation(
+        // Error collections are reached by index around each OCSP check rather than held by
+        // reference, because a reference cannot survive the await the check may contain.
+        private async ValueTask FinishRevocationAsync(
             X509RevocationMode revocationMode,
             X509RevocationFlag revocationFlag,
-            int chainSize)
+            int chainSize,
+            bool async,
+            CancellationToken cancellationToken)
         {
             WorkingChain workingChain = BuildWorkingChain();
 
@@ -463,30 +533,29 @@ namespace System.Security.Cryptography.X509Certificates
             }
 
             Interop.Crypto.X509VerifyStatusCode statusCode;
-            ref ErrorCollection refErrors = ref workingChain[0];
 
             // EndCertificateOnly, not testing a trusted self-signed certificate.
             if (revocationFlag == X509RevocationFlag.EndCertificateOnly && chainSize > 1)
             {
-                if (refErrors.HasCorruptRevocation())
+                if (workingChain[0].HasCorruptRevocation())
                 {
-                    refErrors.ClearRevoked();
+                    workingChain[0].ClearRevoked();
                 }
 
-                if (refErrors.IsRevoked())
+                if (workingChain[0].IsRevoked())
                 {
-                    refErrors.ClearRevocationUnknown();
+                    workingChain[0].ClearRevocationUnknown();
                     return;
                 }
 
-                Debug.Assert(refErrors.HasRevocationUnknown());
-                refErrors.ClearRevocationUnknown();
+                Debug.Assert(workingChain[0].HasRevocationUnknown());
+                workingChain[0].ClearRevocationUnknown();
 
-                statusCode = CheckOcsp(0, _leafHandle, revocationMode);
+                statusCode = await CheckOcspAsync(0, _leafHandle, revocationMode, async, cancellationToken).ConfigureAwait(false);
 
                 if (statusCode != Interop.Crypto.X509VerifyStatusCode.X509_V_OK)
                 {
-                    refErrors.Add(statusCode);
+                    workingChain[0].Add(statusCode);
                 }
 
                 return;
@@ -506,14 +575,12 @@ namespace System.Security.Cryptography.X509Certificates
 
                 if (workingChain.LastError >= start)
                 {
-                    refErrors = ref workingChain[start];
-
-                    if (refErrors.HasCorruptRevocation())
+                    if (workingChain[start].HasCorruptRevocation())
                     {
-                        refErrors.ClearRevoked();
+                        workingChain[start].ClearRevoked();
                     }
 
-                    encounteredRevocation = refErrors.IsRevoked();
+                    encounteredRevocation = workingChain[start].IsRevoked();
 
                     Debug.Assert(chainSize == 1 || revocationFlag != X509RevocationFlag.EndCertificateOnly);
 
@@ -524,10 +591,10 @@ namespace System.Security.Cryptography.X509Certificates
                     // since the root IS the end certificate, keep the revoked result.
                     if (encounteredRevocation && revocationFlag == X509RevocationFlag.ExcludeRoot)
                     {
-                        refErrors.ClearRevoked();
+                        workingChain[start].ClearRevoked();
                         encounteredRevocation = false;
                     }
-                    else if (refErrors.HasRevocationUnknown() && revocationFlag != X509RevocationFlag.ExcludeRoot)
+                    else if (workingChain[start].HasRevocationUnknown() && revocationFlag != X509RevocationFlag.ExcludeRoot)
                     {
                         // If the chain size is 1 we need to copy the root cert into untrusted so
                         // OCSP_basic_verify can find it.
@@ -546,19 +613,19 @@ namespace System.Security.Cryptography.X509Certificates
 
                         using (SafeX509Handle rootHandle = Interop.Crypto.X509UpRef(rootPtr))
                         {
-                            statusCode = CheckOcsp(start, rootHandle, revocationMode);
+                            statusCode = await CheckOcspAsync(start, rootHandle, revocationMode, async, cancellationToken).ConfigureAwait(false);
                         }
 
                         if (statusCode != Interop.Crypto.X509VerifyStatusCode.X509_V_OK)
                         {
-                            refErrors.Add(statusCode);
-                            encounteredRevocation = refErrors.IsRevoked();
+                            workingChain[start].Add(statusCode);
+                            encounteredRevocation = workingChain[start].IsRevoked();
                         }
                     }
 
                     // Root is revoked and we care, revoked and we don't care, or it's OK.
                     // Clear any of the bits that indicate revocation is unknown (for the root).
-                    refErrors.ClearRevocationUnknown();
+                    workingChain[start].ClearRevocationUnknown();
                     start--;
                 }
                 else
@@ -574,34 +641,32 @@ namespace System.Security.Cryptography.X509Certificates
 
                 for (int i = start; i >= 0; i--)
                 {
-                    refErrors = ref workingChain[i];
-
                     if (encounteredRevocation)
                     {
-                        refErrors.ClearRevoked();
-                        refErrors.AddRevocationUnknown();
+                        workingChain[i].ClearRevoked();
+                        workingChain[i].AddRevocationUnknown();
                         continue;
                     }
 
-                    if (refErrors.HasCorruptRevocation())
+                    if (workingChain[i].HasCorruptRevocation())
                     {
-                        refErrors.ClearRevoked();
+                        workingChain[i].ClearRevoked();
                     }
 
-                    if (refErrors.IsRevoked())
+                    if (workingChain[i].IsRevoked())
                     {
-                        refErrors.ClearRevocationUnknown();
+                        workingChain[i].ClearRevocationUnknown();
                         encounteredRevocation = true;
                         continue;
                     }
 
-                    if (refErrors.HasRevocationUnknown())
+                    if (workingChain[i].HasRevocationUnknown())
                     {
-                        refErrors.ClearRevocationUnknown();
+                        workingChain[i].ClearRevocationUnknown();
 
                         if (i == 0)
                         {
-                            statusCode = CheckOcsp(0, _leafHandle, revocationMode);
+                            statusCode = await CheckOcspAsync(0, _leafHandle, revocationMode, async, cancellationToken).ConfigureAwait(false);
                         }
                         else
                         {
@@ -609,14 +674,14 @@ namespace System.Security.Cryptography.X509Certificates
 
                             using (SafeX509Handle certHandle = Interop.Crypto.X509UpRef(certPtr))
                             {
-                                statusCode = CheckOcsp(i, certHandle, revocationMode);
+                                statusCode = await CheckOcspAsync(i, certHandle, revocationMode, async, cancellationToken).ConfigureAwait(false);
                             }
                         }
 
                         if (statusCode != Interop.Crypto.X509VerifyStatusCode.X509_V_OK)
                         {
-                            refErrors.Add(statusCode);
-                            encounteredRevocation = refErrors.IsRevoked();
+                            workingChain[i].Add(statusCode);
+                            encounteredRevocation = workingChain[i].IsRevoked();
                         }
                     }
                 }
@@ -736,16 +801,20 @@ namespace System.Security.Cryptography.X509Certificates
             }
         }
 
-        private Interop.Crypto.X509VerifyStatusCode CheckOcsp(
+        private async ValueTask<Interop.Crypto.X509VerifyStatusCode> CheckOcspAsync(
             int chainDepth,
             SafeX509Handle certHandle,
-            X509RevocationMode revocationMode)
+            X509RevocationMode revocationMode,
+            bool async,
+            CancellationToken cancellationToken)
         {
             if (revocationMode == X509RevocationMode.NoCheck)
             {
                 return X509VerifyStatusCodeUniversal.X509_V_ERR_UNABLE_TO_GET_CRL;
             }
 
+            // Serves a stapled response at depth 0 as well as the on-disk cache, so it is
+            // consulted even where nothing is ever written to that directory.
             string ocspCache = OpenSslCrlCache.GetCachedOcspResponseDirectory();
             Interop.Crypto.X509VerifyStatusCode status =
                 Interop.Crypto.X509ChainGetCachedOcspStatus(_storeCtx, ocspCache, chainDepth);
@@ -758,6 +827,24 @@ namespace System.Security.Cryptography.X509Certificates
             if (status != X509VerifyStatusCodeUniversal.X509_V_ERR_UNABLE_TO_GET_CRL)
             {
                 return status;
+            }
+
+            string? memoryCacheKey = null;
+
+            if (!OpenSslCrlCache.PersistsToDisk)
+            {
+                memoryCacheKey = OpenSslOcspCache.GetKey(certHandle);
+                status = CheckOcspFromMemoryCache(memoryCacheKey, chainDepth);
+
+                if (OpenSslX509ChainEventSource.Log.IsEnabled())
+                {
+                    OpenSslX509ChainEventSource.Log.OcspResponseFromCache(chainDepth, status);
+                }
+
+                if (status != X509VerifyStatusCodeUniversal.X509_V_ERR_UNABLE_TO_GET_CRL)
+                {
+                    return status;
+                }
             }
 
             if (revocationMode != X509RevocationMode.Online)
@@ -774,17 +861,7 @@ namespace System.Security.Cryptography.X509Certificates
 
             using (SafeOcspRequestHandle req = Interop.Crypto.X509ChainBuildOcspRequest(_storeCtx, chainDepth))
             {
-                ArraySegment<byte> encoded = Interop.Crypto.OpenSslRentEncode(
-                    Interop.Crypto.GetOcspRequestDerSize,
-                    Interop.Crypto.EncodeOcspRequest,
-                    req);
-
-                ArraySegment<char> urlEncoded = UrlBase64Encoding.RentEncode(encoded);
-                string requestUrl = UrlPathAppend(baseUri, urlEncoded);
-
-                // Nothing sensitive is in the encoded request (it was sent via HTTP-non-S)
-                CryptoPool.Return(encoded.Array!, clearSize: 0);
-                ArrayPool<char>.Shared.Return(urlEncoded.Array!);
+                string requestUrl = BuildOcspGetUrl(baseUri, req);
 
                 // https://tools.ietf.org/html/rfc6960#appendix-A describes both a GET and a POST
                 // version of an OCSP responder.
@@ -794,35 +871,128 @@ namespace System.Security.Cryptography.X509Certificates
                 // (On-line Revocation Checking Requirements) says that the GET method must be supported.
                 //
                 // So, for now, only try GET.
-                SafeOcspResponseHandle? resp =
+                byte[]? der = async ?
+                    await OpenSslCertificateAssetDownloader.DownloadOcspGetAsync(requestUrl, _downloadTimeout, cancellationToken).ConfigureAwait(false) :
                     OpenSslCertificateAssetDownloader.DownloadOcspGet(requestUrl, _downloadTimeout);
 
-                using (resp)
+                using (SafeOcspResponseHandle? resp = OpenSslCertificateAssetDownloader.DecodeOcspResponse(der))
                 {
                     if (resp == null || resp.IsInvalid)
                     {
                         return X509VerifyStatusCodeUniversal.X509_V_ERR_UNABLE_TO_GET_CRL;
                     }
 
-                    try
+                    string? cachePath = null;
+
+                    if (OpenSslCrlCache.PersistsToDisk)
                     {
-                        System.IO.Directory.CreateDirectory(ocspCache);
-                    }
-                    catch
-                    {
-                        // Opportunistic create, suppress all errors.
+                        try
+                        {
+                            System.IO.Directory.CreateDirectory(ocspCache);
+                        }
+                        catch
+                        {
+                            // Opportunistic create, suppress all errors.
+                        }
+
+                        cachePath = ocspCache;
                     }
 
-                    status = Interop.Crypto.X509ChainVerifyOcsp(_storeCtx, req, resp, ocspCache, chainDepth);
+                    status = Interop.Crypto.X509ChainVerifyOcsp(_storeCtx, req, resp, cachePath, chainDepth);
 
                     if (OpenSslX509ChainEventSource.Log.IsEnabled())
                     {
                         OpenSslX509ChainEventSource.Log.OcspResponseFromDownload(chainDepth, status);
                     }
 
+                    if (memoryCacheKey != null &&
+                        (status == Interop.Crypto.X509VerifyStatusCode.X509_V_OK ||
+                            status == X509VerifyStatusCodeUniversal.X509_V_ERR_CERT_REVOKED) &&
+                        IsCacheableOcspResponse(der!, chainDepth))
+                    {
+                        OpenSslOcspCache.Add(memoryCacheKey, der!);
+                    }
+
                     return status;
                 }
             }
+        }
+
+        /// <summary>
+        /// The in-memory counterpart of the native on-disk lookup: a stored response that is no
+        /// longer cacheable, or no longer verifies, is dropped so a live request follows.
+        /// </summary>
+        private Interop.Crypto.X509VerifyStatusCode CheckOcspFromMemoryCache(string memoryCacheKey, int chainDepth)
+        {
+            if (!OpenSslOcspCache.TryGet(memoryCacheKey, out byte[]? der))
+            {
+                return X509VerifyStatusCodeUniversal.X509_V_ERR_UNABLE_TO_GET_CRL;
+            }
+
+            Interop.Crypto.X509VerifyStatusCode status = X509VerifyStatusCodeUniversal.X509_V_ERR_UNABLE_TO_GET_CRL;
+
+            if (IsCacheableOcspResponse(der, chainDepth))
+            {
+                using (SafeOcspResponseHandle resp = Interop.Crypto.DecodeOcspResponse(der))
+                {
+                    if (!resp.IsInvalid)
+                    {
+                        status = Interop.Crypto.X509ChainVerifyOcsp(
+                            _storeCtx,
+                            SafeOcspRequestHandle.InvalidHandle,
+                            resp,
+                            cachePath: null,
+                            chainDepth);
+                    }
+                }
+            }
+
+            if (status == X509VerifyStatusCodeUniversal.X509_V_ERR_UNABLE_TO_GET_CRL)
+            {
+                OpenSslOcspCache.Evict(memoryCacheKey);
+                Interop.Crypto.ErrClearError();
+            }
+
+            return status;
+        }
+
+        /// <summary>
+        /// Whether the response is definitive and inside its validity window right now, judged
+        /// for the chain element at <paramref name="chainDepth"/> and its issuer.
+        /// </summary>
+        private bool IsCacheableOcspResponse(byte[] der, int chainDepth)
+        {
+            using (SafeX509StackHandle chainStack = Interop.Crypto.X509StoreCtxGetChain(_storeCtx))
+            {
+                int chainSize = Interop.Crypto.GetX509StackFieldCount(chainStack);
+                int issuerDepth = chainSize == chainDepth + 1 ? chainDepth : chainDepth + 1;
+                IntPtr subject = Interop.Crypto.GetX509StackField(chainStack, chainDepth);
+                ReadOnlySpan<IntPtr> issuers = [Interop.Crypto.GetX509StackField(chainStack, issuerDepth)];
+
+                return Interop.Crypto.X509DecodeOcspToExpiration(
+                    der,
+                    SafeOcspRequestHandle.InvalidHandle,
+                    subject,
+                    issuers,
+                    out _);
+            }
+        }
+
+        private static string BuildOcspGetUrl(string baseUri, SafeOcspRequestHandle req)
+        {
+            ArraySegment<byte> encoded = Interop.Crypto.OpenSslRentEncode(
+                Interop.Crypto.GetOcspRequestDerSize,
+                Interop.Crypto.EncodeOcspRequest,
+                req);
+
+            ArraySegment<char> urlEncoded = UrlBase64Encoding.RentEncode(encoded);
+            string requestUrl = UrlPathAppend(baseUri, urlEncoded);
+
+            // Nothing sensitive is in the encoded request (it was sent via HTTP-non-S)
+            CryptoPool.Return(encoded.Array!, clearSize: 0);
+            ArrayPool<char>.Shared.Return(urlEncoded.Array!);
+
+            return requestUrl;
         }
 
         private static string UrlPathAppend(string baseUri, ReadOnlyMemory<char> resource)
@@ -1196,20 +1366,6 @@ namespace System.Security.Cryptography.X509Certificates
             }
         }
 
-        private static X509Certificate2? DownloadCertificate(
-            ReadOnlyMemory<byte> authorityInformationAccess,
-            TimeSpan downloadTimeout)
-        {
-            string? uri = FindHttpAiaRecord(authorityInformationAccess, Oids.CertificateAuthorityIssuers);
-
-            if (uri == null)
-            {
-                return null;
-            }
-
-            return OpenSslCertificateAssetDownloader.DownloadCertificate(uri, downloadTimeout);
-        }
-
         private static string? GetOcspEndpoint(SafeX509Handle cert)
         {
             ArraySegment<byte> authorityInformationAccess =
@@ -1284,7 +1440,7 @@ namespace System.Security.Cryptography.X509Certificates
             return null;
         }
 
-        private static void AddToStackAndUpRef(SafeX509Handle cert, SafeX509StackHandle stack)
+        internal static void AddToStackAndUpRef(SafeX509Handle cert, SafeX509StackHandle stack)
         {
             using (SafeX509Handle tmp = Interop.Crypto.X509UpRef(cert))
             {

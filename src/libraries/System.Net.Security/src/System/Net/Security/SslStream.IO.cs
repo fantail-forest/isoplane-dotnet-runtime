@@ -259,7 +259,7 @@ namespace System.Net.Security
                 }
                 while (token.Status.ErrorCode == SecurityStatusPalErrorCode.ContinueNeeded);
 
-                CompleteHandshake(_sslAuthenticationOptions);
+                await CompleteHandshakeAsync<TIOAdapter>(_sslAuthenticationOptions, cancellationToken).ConfigureAwait(false);
             }
             finally
             {
@@ -315,7 +315,7 @@ namespace System.Net.Security
                         throw new AuthenticationException(SR.net_auth_SSPI, ex);
                     }
 
-                    CompleteHandshake(_sslAuthenticationOptions);
+                    await CompleteHandshakeAsync<TIOAdapter>(_sslAuthenticationOptions, cancellationToken).ConfigureAwait(false);
                     return;
                 }
 #endif // TARGET_APPLE
@@ -401,7 +401,7 @@ namespace System.Net.Security
                     }
                 }
 
-                CompleteHandshake(_sslAuthenticationOptions);
+                await CompleteHandshakeAsync<TIOAdapter>(_sslAuthenticationOptions, cancellationToken).ConfigureAwait(false);
             }
             finally
             {
@@ -579,7 +579,8 @@ namespace System.Net.Security
         //
         // - Returns false if failed to verify the Remote Cert
         //
-        private bool CompleteHandshake(ref ProtocolToken alertToken, out SslPolicyErrors sslPolicyErrors, out X509ChainStatusFlags chainStatus)
+        private async ValueTask<CertificateVerificationResult> CompleteHandshakeAsync<TIOAdapter>(CancellationToken cancellationToken)
+            where TIOAdapter : IReadWriteAdapter
         {
             ProcessHandshakeSuccess();
 
@@ -587,9 +588,7 @@ namespace System.Net.Security
             {
                 if (NetEventSource.Log.IsEnabled()) NetEventSource.Error(this, $"Ignoring unsolicited renegotiated certificate.");
                 // ignore certificates received outside of handshake or requested renegotiation.
-                sslPolicyErrors = SslPolicyErrors.None;
-                chainStatus = X509ChainStatusFlags.NoError;
-                return true;
+                return new CertificateVerificationResult(true, SslPolicyErrors.None, X509ChainStatusFlags.NoError, default);
             }
 
 #if TARGET_ANDROID
@@ -600,42 +599,43 @@ namespace System.Net.Security
             // The Java TrustManager callback is called only when the peer has a certificate. It's possible that
             // the peer didn't provide any certificate (for example when the peer is the client) and the validation
             // result hasn't been set. In that case we still need to run the verification at this point.
-            if (TryGetRemoteCertificateValidationResult(out sslPolicyErrors, out chainStatus, ref alertToken, out bool isValid))
+            if (TryGetRemoteCertificateValidationResult(out CertificateVerificationResult javaResult))
             {
-                _handshakeCompleted = isValid;
-                return isValid;
+                _handshakeCompleted = javaResult.Success;
+                return javaResult;
             }
 #endif
 
-            if (!VerifyRemoteCertificate(_sslAuthenticationOptions.CertValidationDelegate, _sslAuthenticationOptions.CertificateContext?.Trust, ref alertToken, out sslPolicyErrors, out chainStatus))
-            {
-                _handshakeCompleted = false;
-                return false;
-            }
+            CertificateVerificationResult result = await VerifyRemoteCertificateAsync<TIOAdapter>(
+                _sslAuthenticationOptions.CertValidationDelegate,
+                _sslAuthenticationOptions.CertificateContext?.Trust,
+                cancellationToken).ConfigureAwait(false);
 
-            _handshakeCompleted = true;
-            return true;
+            _handshakeCompleted = result.Success;
+            return result;
         }
 
-        private void CompleteHandshake(SslAuthenticationOptions sslAuthenticationOptions)
+        private async ValueTask CompleteHandshakeAsync<TIOAdapter>(SslAuthenticationOptions sslAuthenticationOptions, CancellationToken cancellationToken)
+            where TIOAdapter : IReadWriteAdapter
         {
-            ProtocolToken alertToken = default;
-            if (!CompleteHandshake(ref alertToken, out SslPolicyErrors sslPolicyErrors, out X509ChainStatusFlags chainStatus))
+            CertificateVerificationResult result = await CompleteHandshakeAsync<TIOAdapter>(cancellationToken).ConfigureAwait(false);
+
+            if (!result.Success)
             {
                 if (sslAuthenticationOptions!.CertValidationDelegate != null)
                 {
                     // there may be some chain errors but the decision was made by custom callback. Details should be tracing if enabled.
-                    SendAuthResetSignal(new ReadOnlySpan<byte>(alertToken.Payload), ExceptionDispatchInfo.Capture(new AuthenticationException(SR.net_ssl_io_cert_custom_validation, null)));
+                    SendAuthResetSignal(new ReadOnlySpan<byte>(result.AlertToken.Payload), ExceptionDispatchInfo.Capture(new AuthenticationException(SR.net_ssl_io_cert_custom_validation, null)));
                 }
-                else if (sslPolicyErrors == SslPolicyErrors.RemoteCertificateChainErrors && chainStatus != X509ChainStatusFlags.NoError)
+                else if (result.SslPolicyErrors == SslPolicyErrors.RemoteCertificateChainErrors && result.ChainStatus != X509ChainStatusFlags.NoError)
                 {
                     // We failed only because of chain and we have some insight.
-                    SendAuthResetSignal(new ReadOnlySpan<byte>(alertToken.Payload), ExceptionDispatchInfo.Capture(new AuthenticationException(SR.Format(SR.net_ssl_io_cert_chain_validation, chainStatus), null)));
+                    SendAuthResetSignal(new ReadOnlySpan<byte>(result.AlertToken.Payload), ExceptionDispatchInfo.Capture(new AuthenticationException(SR.Format(SR.net_ssl_io_cert_chain_validation, result.ChainStatus), null)));
                 }
                 else
                 {
                     // Simple add sslPolicyErrors as crude info.
-                    SendAuthResetSignal(new ReadOnlySpan<byte>(alertToken.Payload), ExceptionDispatchInfo.Capture(new AuthenticationException(SR.Format(SR.net_ssl_io_cert_validation, sslPolicyErrors), null)));
+                    SendAuthResetSignal(new ReadOnlySpan<byte>(result.AlertToken.Payload), ExceptionDispatchInfo.Capture(new AuthenticationException(SR.Format(SR.net_ssl_io_cert_validation, result.SslPolicyErrors), null)));
                 }
             }
         }

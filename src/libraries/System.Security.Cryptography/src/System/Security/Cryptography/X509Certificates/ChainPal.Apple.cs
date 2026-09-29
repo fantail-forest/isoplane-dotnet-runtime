@@ -4,6 +4,8 @@
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
+using System.Threading;
+using System.Threading.Tasks;
 using Internal.Cryptography;
 using Microsoft.Win32.SafeHandles;
 
@@ -581,6 +583,36 @@ namespace System.Security.Cryptography.X509Certificates
         {
             Interop.CoreFoundation.CFRelease(handle);
             return true;
+        }
+
+        internal static partial ValueTask<IChainPal?> BuildChainAsync(
+            bool useMachineContext,
+            ICertificatePal cert,
+            X509Certificate2Collection? extraStore,
+            OidCollection? applicationPolicy,
+            OidCollection? certificatePolicy,
+            X509RevocationMode revocationMode,
+            X509RevocationFlag revocationFlag,
+            X509Certificate2Collection? customTrustStore,
+            X509ChainTrustMode trustMode,
+            DateTime verificationTime,
+            TimeSpan timeout,
+            bool disableAia,
+            CancellationToken cancellationToken)
+        {
+            return new ValueTask<IChainPal?>(BuildChain(
+                useMachineContext,
+                cert,
+                extraStore,
+                applicationPolicy,
+                certificatePolicy,
+                revocationMode,
+                revocationFlag,
+                customTrustStore,
+                trustMode,
+                verificationTime,
+                timeout,
+                disableAia));
         }
 
         internal static partial IChainPal? BuildChain(

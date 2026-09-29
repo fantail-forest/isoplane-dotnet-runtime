@@ -7,6 +7,7 @@ using System.Net.Security;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography.X509Certificates;
 using System.Threading;
+using System.Threading.Tasks;
 
 namespace System.Net.Security
 {
@@ -14,31 +15,41 @@ namespace System.Net.Security
     {
         private JavaProxy.RemoteCertificateValidationResult VerifyRemoteCertificate()
         {
-            ProtocolToken alertToken = default;
-            var isValid = VerifyRemoteCertificate(
+            // The Java TrustManager calls back synchronously; the Android chain engine never
+            // awaits, so the verification completes on the spot.
+            ValueTask<CertificateVerificationResult> verification = VerifyRemoteCertificateAsync<SyncReadWriteAdapter>(
                 _sslAuthenticationOptions.CertValidationDelegate,
                 _sslAuthenticationOptions.CertificateContext?.Trust,
-                ref alertToken,
-                out SslPolicyErrors sslPolicyErrors,
-                out X509ChainStatusFlags chainStatus);
+                CancellationToken.None);
+
+            Debug.Assert(verification.IsCompleted);
+            CertificateVerificationResult result = verification.GetAwaiter().GetResult();
 
             return new()
             {
-                IsValid = isValid,
-                SslPolicyErrors = sslPolicyErrors,
-                ChainStatus = chainStatus,
-                AlertToken = alertToken,
+                IsValid = result.Success,
+                SslPolicyErrors = result.SslPolicyErrors,
+                ChainStatus = result.ChainStatus,
+                AlertToken = result.AlertToken,
             };
         }
 
-        private bool TryGetRemoteCertificateValidationResult(out SslPolicyErrors sslPolicyErrors, out X509ChainStatusFlags chainStatus, ref ProtocolToken alertToken, out bool isValid)
+        private bool TryGetRemoteCertificateValidationResult(out CertificateVerificationResult result)
         {
             JavaProxy.RemoteCertificateValidationResult? validationResult = _securityContext?.SslStreamProxy.ValidationResult;
-            sslPolicyErrors = validationResult?.SslPolicyErrors ?? default;
-            chainStatus = validationResult?.ChainStatus ?? default;
-            isValid = validationResult?.IsValid ?? default;
-            alertToken = validationResult?.AlertToken ?? default;
-            return validationResult is not null;
+
+            if (validationResult is null)
+            {
+                result = default;
+                return false;
+            }
+
+            result = new CertificateVerificationResult(
+                validationResult.IsValid,
+                validationResult.SslPolicyErrors,
+                validationResult.ChainStatus,
+                validationResult.AlertToken ?? default);
+            return true;
         }
 
         internal sealed class JavaProxy : IDisposable

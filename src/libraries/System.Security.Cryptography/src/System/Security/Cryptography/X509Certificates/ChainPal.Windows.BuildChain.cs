@@ -2,6 +2,8 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 
 using System.Runtime.InteropServices;
+using System.Threading;
+using System.Threading.Tasks;
 using Internal.Cryptography;
 using Microsoft.Win32.SafeHandles;
 
@@ -11,6 +13,36 @@ namespace System.Security.Cryptography.X509Certificates
 {
     internal sealed partial class ChainPal : IDisposable, IChainPal
     {
+        internal static partial ValueTask<IChainPal?> BuildChainAsync(
+            bool useMachineContext,
+            ICertificatePal cert,
+            X509Certificate2Collection? extraStore,
+            OidCollection? applicationPolicy,
+            OidCollection? certificatePolicy,
+            X509RevocationMode revocationMode,
+            X509RevocationFlag revocationFlag,
+            X509Certificate2Collection? customTrustStore,
+            X509ChainTrustMode trustMode,
+            DateTime verificationTime,
+            TimeSpan timeout,
+            bool disableAia,
+            CancellationToken cancellationToken)
+        {
+            return new ValueTask<IChainPal?>(BuildChain(
+                useMachineContext,
+                cert,
+                extraStore,
+                applicationPolicy,
+                certificatePolicy,
+                revocationMode,
+                revocationFlag,
+                customTrustStore,
+                trustMode,
+                verificationTime,
+                timeout,
+                disableAia));
+        }
+
         /// <summary>
         /// Does not throw on error. Returns null ChainPal instead.
         /// </summary>
