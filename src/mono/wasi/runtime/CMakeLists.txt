@@ -32,6 +32,9 @@ target_link_libraries(dotnet
     ${NATIVE_BIN_DIR}/libSystem.Globalization.Native.a
     ${NATIVE_BIN_DIR}/libSystem.IO.Compression.Native.a
     ${NATIVE_BIN_DIR}/libz.a
+    ${NATIVE_BIN_DIR}/libbrotlienc.a
+    ${NATIVE_BIN_DIR}/libbrotlidec.a
+    ${NATIVE_BIN_DIR}/libbrotlicommon.a
 )
 
 # The cryptography backend, when the native libraries were built with OpenSSL
