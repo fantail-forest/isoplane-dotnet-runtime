@@ -11,8 +11,11 @@ internal static partial class Interop
 {
     internal static partial class Crypto
     {
+        // The native function returns nothing; a declared 64-bit result is
+        // tolerated by native calling conventions but traps an interpreter
+        // that calls through a typed thunk.
         [LibraryImport(Libraries.CryptoNative, EntryPoint = "CryptoNative_ErrClearError")]
-        internal static partial ulong ErrClearError();
+        internal static partial void ErrClearError();
 
         [LibraryImport(Libraries.CryptoNative, EntryPoint = "CryptoNative_ErrGetExceptionError")]
         private static partial ulong ErrGetExceptionError([MarshalAs(UnmanagedType.Bool)] out bool isAllocFailure);

@@ -34,6 +34,17 @@ target_link_libraries(dotnet
     ${NATIVE_BIN_DIR}/libz.a
 )
 
+# The cryptography backend, when the native libraries were built with OpenSSL
+# compiled to wasm; the archive order lets each resolve into the next.
+if(EXISTS ${NATIVE_BIN_DIR}/libSystem.Security.Cryptography.Native.OpenSsl.a)
+    target_link_libraries(dotnet
+        PRIVATE
+        ${NATIVE_BIN_DIR}/libSystem.Security.Cryptography.Native.OpenSsl.a
+        ${NATIVE_BIN_DIR}/libssl.a
+        ${NATIVE_BIN_DIR}/libcrypto.a
+    )
+endif()
+
 set_target_properties(dotnet PROPERTIES
     LINK_DEPENDS "${NATIVE_BIN_DIR}/src/wasi-default.rsp;"
     LINK_FLAGS "@${NATIVE_BIN_DIR}/src/wasi-default.rsp @${NATIVE_BIN_DIR}/src/wasi-link.rsp ${CONFIGURATION_LINK_FLAGS} "

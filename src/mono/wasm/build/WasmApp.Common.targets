@@ -750,6 +750,8 @@
       <_WasmPInvokeModules Include="libSystem.Native" />
       <_WasmPInvokeModules Include="libSystem.IO.Compression.Native" />
       <_WasmPInvokeModules Include="libSystem.Globalization.Native" />
+      <!-- The runtime pack's cryptography backend, when the pack carries it. -->
+      <_WasmPInvokeModules Include="libSystem.Security.Cryptography.Native.OpenSsl" Condition="Exists('$(MicrosoftNetCoreAppRuntimePackRidNativeDir)libSystem.Security.Cryptography.Native.OpenSsl.a')" />
     </ItemGroup>
 
     <PropertyGroup>
