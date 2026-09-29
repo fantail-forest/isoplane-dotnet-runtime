@@ -6985,7 +6985,10 @@ mono_lookup_internal_call_full_with_flags (MonoMethod *method, gboolean warn_on_
 		if (res)
 			goto exit;
 
-		if (warn_on_missing) {
+		/* Outside corlib a missing internal call is the declaring assembly's error, reported by
+		 * MissingMethodException rather than as runtime/library skew; on WASI the banner would
+		 * also end the guest, whose host provides no console. */
+		if (warn_on_missing && m_class_get_image (method->klass) == mono_defaults.corlib) {
 			g_warning ("cant resolve internal call to \"%s\" (tested without signature also)", mname);
 			g_print ("\nYour mono runtime and class libraries are out of sync.\n");
 			g_print ("The out of sync library is: %s\n", m_class_get_image (method->klass)->name);

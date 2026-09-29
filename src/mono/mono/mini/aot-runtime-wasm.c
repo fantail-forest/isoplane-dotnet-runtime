@@ -156,18 +156,22 @@ compare_icall_tramp (const void *key, const void *elem)
 	return strcmp (key, *(void**)elem);
 }
 
-gpointer
-mono_wasm_get_interp_to_native_trampoline (MonoMethodSignature *sig)
+/*
+ * Writes SIG's interpreter-to-native cookie into COOKIE, NUL terminated.
+ * Returns FALSE when it does not fit in SIZE bytes.
+ */
+MONO_API int
+mono_wasm_signature_cookie (MonoMethodSignature *sig, char *cookie, int size)
 {
-	char cookie [32];
 	int c_count, offset = 1;
 	gboolean is_byref_return = 0;
 
-	memset (cookie, 0, 32);
+	memset (cookie, 0, size);
 	cookie [0] = type_to_c (sig->ret, &is_byref_return);
 
 	c_count = sig->param_count + sig->hasthis + is_byref_return + 1;
-	g_assert (c_count < sizeof (cookie)); //ensure we don't overflow the local
+	if (c_count >= size)
+		return FALSE;
 
 	if (is_byref_return) {
 		cookie[0] = 'V';
@@ -183,7 +187,23 @@ mono_wasm_get_interp_to_native_trampoline (MonoMethodSignature *sig)
 	for (int i = 0; i < sig->param_count; ++i) {
 		cookie [offset + i] = type_to_c (sig->params [i], NULL);
 	}
+	return TRUE;
+}
 
+gboolean
+mono_wasm_has_interp_to_native_trampoline (MonoMethodSignature *sig)
+{
+	char cookie [32];
+	return mono_wasm_signature_cookie (sig, cookie, sizeof (cookie)) && mono_wasm_interp_to_native_callback (cookie);
+}
+
+gpointer
+mono_wasm_get_interp_to_native_trampoline (MonoMethodSignature *sig)
+{
+	char cookie [32];
+	/* The interpreter refuses a native call without a bridge when it compiles the caller. */
+	if (!mono_wasm_signature_cookie (sig, cookie, sizeof (cookie)))
+		g_error ("CANNOT HANDLE INTERP ICALL SIG of %d parameters\n", sig->param_count);
 	void *p = mono_wasm_interp_to_native_callback (cookie);
 	if (!p)
 		g_error ("CANNOT HANDLE INTERP ICALL SIG %s\n", cookie);

@@ -38,4 +38,11 @@ mono_loader_install_pinvoke_override (PInvokeOverrideFn override_fn);
 char *
 mono_fixup_symbol_name (const char *prefix, const char *key, const char *suffix);
 
+#ifdef HOST_WASM
+typedef int (*MonoWasmPInvokeSignatureCheck) (void *method, void *addr);
+
+MONO_API void
+mono_wasm_install_pinvoke_signature_check (MonoWasmPInvokeSignatureCheck check);
+#endif
+
 #endif
