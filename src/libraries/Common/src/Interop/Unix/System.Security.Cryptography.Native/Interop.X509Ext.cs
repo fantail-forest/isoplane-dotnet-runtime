@@ -16,7 +16,7 @@ internal static partial class Interop
             SafeAsn1OctetStringHandle data);
 
         [LibraryImport(Libraries.CryptoNative, EntryPoint = "CryptoNative_X509ExtensionDestroy")]
-        internal static partial int X509ExtensionDestroy(IntPtr x);
+        internal static partial void X509ExtensionDestroy(IntPtr x);
 
         [LibraryImport(Libraries.CryptoNative, EntryPoint = "CryptoNative_X509V3ExtPrint")]
         [return: MarshalAs(UnmanagedType.Bool)]
