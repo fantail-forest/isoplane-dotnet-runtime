@@ -18,7 +18,7 @@ syntax: glob
 *.sln.docstates
 
 # Build results
-artifacts/
+/artifacts
 .idea/
 [Dd]ebug/
 [Dd]ebugPublic/
