@@ -241,6 +241,10 @@ namespace System.Runtime.CompilerServices
                 result = box;
             }
 
+#if TARGET_WASI
+            if (Threading.Tasks.Task.s_isoplaneAsyncState is not null)
+                Threading.Tasks.Task.RecordAsyncStateMachine(result);
+#endif
             return result;
         }
 
