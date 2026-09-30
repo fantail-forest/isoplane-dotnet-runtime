@@ -3180,7 +3180,7 @@ compute_frame_info (MonoInternalThread *thread, DebuggerTlsData *tls, gboolean f
 	tls->frames = new_frames;
 	tls->frame_count = new_frame_count;
 	tls->frames_up_to_date = TRUE;
-#ifndef TARGET_WASM
+#if !defined(TARGET_WASM) || defined(HOST_WASI)
 	if (CHECK_PROTOCOL_VERSION (2, 52)) {
 		MonoJitTlsData *jit_data = thread->thread_info->jit_data;
 		gboolean has_interp_resume_state = FALSE;
@@ -10265,6 +10265,7 @@ thread_commands (int command, guint8 *p, guint8 *end, Buffer *buf)
 		if (tls->frames [0]->de.ji->is_interp) {
 			MonoJitTlsData *jit_data = thread->thread_info->jit_data;
 			mini_get_interp_callbacks_api ()->set_resume_state (jit_data, NULL, NULL, tls->frames [0]->interp_frame, (guint8*)tls->frames [0]->de.ji->code_start + sp.native_offset);
+			tls->frames [0]->il_offset = sp.il_offset;
 		} else {
 			MONO_CONTEXT_SET_IP (&tls->restore_state.ctx, (guint8*)tls->frames [0]->de.ji->code_start + sp.native_offset);
 		}
