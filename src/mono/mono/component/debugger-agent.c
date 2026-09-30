@@ -1477,6 +1477,9 @@ transport_handshake (void)
 #endif // DISABLE_SOCKET_TRANSPORT
 
 	disconnected = FALSE;
+#ifdef HOST_WASI
+	mono_set_is_debugger_attached (TRUE);
+#endif
 	return TRUE;
 }
 
@@ -6580,6 +6583,7 @@ dispose_vm (void)
 		resume_vm ();
 #ifdef HOST_WASI
 	wasi_suspend_count = 0;
+	mono_set_is_debugger_attached (FALSE);
 	free_managed_data_breakpoints (managed_data_breakpoints);
 	managed_data_breakpoints = NULL;
 #endif
