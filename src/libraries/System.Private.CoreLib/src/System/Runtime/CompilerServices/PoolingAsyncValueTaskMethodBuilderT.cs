@@ -168,7 +168,7 @@ namespace System.Runtime.CompilerServices
                     stronglyTypedBox.Context = currentContext;
                 }
 
-                return stronglyTypedBox;
+                return TrackForDebugger(stronglyTypedBox);
             }
 
             // The least common case: we have a weakly-typed boxed.  This results if the debugger
@@ -191,7 +191,7 @@ namespace System.Runtime.CompilerServices
                 // Update the context.  This only happens with a debugger, so no need to spend
                 // extra IL checking for equality before doing the assignment.
                 weaklyTypedBox.Context = currentContext;
-                return weaklyTypedBox;
+                return TrackForDebugger(weaklyTypedBox);
             }
 
             // Alert a listening debugger that we can't make forward progress unless it slips threads.
@@ -214,6 +214,16 @@ namespace System.Runtime.CompilerServices
             box.StateMachine = stateMachine;
             box.Context = currentContext;
 
+            return TrackForDebugger(box);
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static IAsyncStateMachineBox TrackForDebugger(IAsyncStateMachineBox box)
+        {
+#if TARGET_WASI
+            if (Threading.Tasks.Task.s_isoplaneAsyncState is not null)
+                Threading.Tasks.Task.RecordAsyncStateMachine(box);
+#endif
             return box;
         }
 
@@ -245,20 +255,46 @@ namespace System.Runtime.CompilerServices
 
             /// <summary>Completes the box with a result.</summary>
             /// <param name="result">The result.</param>
-            public void SetResult(TResult result) =>
+            public void SetResult(TResult result)
+            {
+#if TARGET_WASI
+                if (Threading.Tasks.Task.s_isoplaneAsyncState is not null)
+                    Threading.Tasks.Task.ForgetAsyncState(this);
+#endif
                 _valueTaskSource.SetResult(result);
+            }
 
             /// <summary>Completes the box with an error.</summary>
             /// <param name="error">The exception.</param>
-            public void SetException(Exception error) =>
+            public void SetException(Exception error)
+            {
+#if TARGET_WASI
+                if (Threading.Tasks.Task.s_isoplaneAsyncState is not null)
+                    Threading.Tasks.Task.ForgetAsyncState(this);
+#endif
                 _valueTaskSource.SetException(error);
+            }
 
             /// <summary>Gets the status of the box.</summary>
             public ValueTaskSourceStatus GetStatus(short token) => _valueTaskSource.GetStatus(token);
 
             /// <summary>Schedules the continuation action for this box.</summary>
-            public void OnCompleted(Action<object?> continuation, object? state, short token, ValueTaskSourceOnCompletedFlags flags) =>
+            public void OnCompleted(Action<object?> continuation, object? state, short token, ValueTaskSourceOnCompletedFlags flags)
+            {
+#if TARGET_WASI
+                if (Threading.Tasks.Task.s_isoplaneAsyncState is not null && GetStatus(token) == ValueTaskSourceStatus.Pending)
+                {
+                    IAsyncStateMachineBox? caller = state as IAsyncStateMachineBox;
+                    if (caller is null && state is Action action)
+                        caller = action.Target as IAsyncStateMachineBox ?? AsyncMethodBuilderCore.TryGetContinuationTask(action) as IAsyncStateMachineBox;
+                    if (caller is not null)
+                        Threading.Tasks.Task.RecordAsyncStateMachine(caller, this);
+                    else if (state is Threading.Tasks.Task operation)
+                        Threading.Tasks.Task.RecordAsyncDependency(operation, this);
+                }
+#endif
                 _valueTaskSource.OnCompleted(continuation, state, token, flags);
+            }
 
             /// <summary>Gets the current version number of the box.</summary>
             public short Version => _valueTaskSource.Version;
