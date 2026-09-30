@@ -176,6 +176,7 @@ namespace System.Threading.Tasks
         internal sealed class AsyncDebugState
         {
             internal AsyncDebugFrame? Frames;
+            internal AsyncDebugDependency? Dependencies;
         }
 
         internal static object EnableIsoplaneAsyncDebugging() => s_isoplaneAsyncState ??= new AsyncDebugState();
@@ -185,10 +186,10 @@ namespace System.Threading.Tasks
             internal readonly Task Operation;
             internal object StateMachine;
             internal readonly string StateMachineType;
-            internal Task Awaited;
+            internal Task? Awaited;
             internal AsyncDebugFrame? Next;
 
-            internal AsyncDebugFrame(Task operation, object stateMachine, Task awaited, AsyncDebugFrame? next)
+            internal AsyncDebugFrame(Task operation, object stateMachine, Task? awaited, AsyncDebugFrame? next)
             {
                 Operation = operation;
                 StateMachine = stateMachine;
@@ -199,7 +200,7 @@ namespace System.Threading.Tasks
         }
 
         [DynamicDependency(nameof(EnableIsoplaneAsyncDebugging))]
-        private void RecordAsyncAwait(IAsyncStateMachineBox box)
+        internal static void RecordAsyncStateMachine(IAsyncStateMachineBox box, Task? awaited = null)
         {
             if (box is not Task operation) return;
             AsyncDebugState state = s_isoplaneAsyncState!;
@@ -209,14 +210,37 @@ namespace System.Threading.Tasks
                 if (ReferenceEquals(frame.Operation, operation))
                 {
                     frame.StateMachine = stateMachine;
-                    frame.Awaited = this;
+                    frame.Awaited = awaited;
                     return;
                 }
             }
-            state.Frames = new AsyncDebugFrame(operation, stateMachine, this, state.Frames);
+            state.Frames = new AsyncDebugFrame(operation, stateMachine, awaited, state.Frames);
         }
 
-        private void ForgetAsyncFrame()
+        internal sealed class AsyncDebugDependency
+        {
+            internal readonly Task Operation;
+            internal readonly Task Awaited;
+            internal AsyncDebugDependency? Next;
+
+            internal AsyncDebugDependency(Task operation, Task awaited, AsyncDebugDependency? next)
+            {
+                Operation = operation;
+                Awaited = awaited;
+                Next = next;
+            }
+        }
+
+        private void RecordAsyncDependency(Task operation)
+        {
+            if (IsCompleted || operation.IsCompleted || ReferenceEquals(operation, this)) return;
+            AsyncDebugState state = s_isoplaneAsyncState!;
+            for (AsyncDebugDependency? item = state.Dependencies; item != null; item = item.Next)
+                if (ReferenceEquals(item.Operation, operation) && ReferenceEquals(item.Awaited, this)) return;
+            state.Dependencies = new AsyncDebugDependency(operation, this, state.Dependencies);
+        }
+
+        private void ForgetAsyncState()
         {
             AsyncDebugState state = s_isoplaneAsyncState!;
             AsyncDebugFrame? previous = null;
@@ -226,9 +250,19 @@ namespace System.Threading.Tasks
                 {
                     if (previous == null) state.Frames = frame.Next;
                     else previous.Next = frame.Next;
-                    return;
+                    break;
                 }
                 previous = frame;
+            }
+            AsyncDebugDependency? preceding = null;
+            for (AsyncDebugDependency? item = state.Dependencies; item != null; item = item.Next)
+            {
+                if (ReferenceEquals(item.Operation, this) || ReferenceEquals(item.Awaited, this))
+                {
+                    if (preceding == null) state.Dependencies = item.Next;
+                    else preceding.Next = item.Next;
+                }
+                else preceding = item;
             }
         }
 #endif
@@ -2550,7 +2584,7 @@ namespace System.Threading.Tasks
             Debug.Assert(continuationAction != null);
 #if TARGET_WASI
             if (s_isoplaneAsyncState is not null && AsyncMethodBuilderCore.TryGetContinuationTask(continuationAction) is IAsyncStateMachineBox box)
-                RecordAsyncAwait(box);
+                RecordAsyncStateMachine(box, this);
 #endif
 
             // Create the best AwaitTaskContinuation object given the request.
@@ -2624,7 +2658,7 @@ namespace System.Threading.Tasks
         {
             Debug.Assert(stateMachineBox != null);
 #if TARGET_WASI
-            if (s_isoplaneAsyncState is not null) RecordAsyncAwait(stateMachineBox);
+            if (s_isoplaneAsyncState is not null) RecordAsyncStateMachine(stateMachineBox, this);
 #endif
 
             // This code path doesn't emit all expected TPL-related events, such as for continuations.
@@ -3512,7 +3546,7 @@ namespace System.Threading.Tasks
         internal void FinishContinuations()
         {
 #if TARGET_WASI
-            if (s_isoplaneAsyncState is not null) ForgetAsyncFrame();
+            if (s_isoplaneAsyncState is not null) ForgetAsyncState();
 #endif
             // Atomically store the fact that this task is completing.  From this point on, the adding of continuations will
             // result in the continuations being run/launched directly rather than being added to the continuation list.
@@ -4600,6 +4634,9 @@ namespace System.Threading.Tasks
         // execution resources of a continuation task.
         internal void AddCompletionAction(ITaskCompletionAction action, bool addBeforeOthers = false)
         {
+#if TARGET_WASI
+            if (s_isoplaneAsyncState is not null && action is Task operation) RecordAsyncDependency(operation);
+#endif
             if (!AddTaskContinuation(action, addBeforeOthers))
                 action.Invoke(this); // run the action directly if we failed to queue the continuation (i.e., the task completed)
         }
