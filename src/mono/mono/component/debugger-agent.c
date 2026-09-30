@@ -996,18 +996,34 @@ socket_transport_accept (SOCKET socket_fd)
 static gboolean
 socket_transport_send (void *data, int len)
 {
-	int res;
+	int total = 0;
 
 	MONO_REQ_GC_SAFE_MODE;
 
-	do {
-		res = send (conn_fd, (const char*)data, len, 0);
-	} while (res == SOCKET_ERROR && get_last_sock_error () == MONO_EINTR);
-
-	if (res != len)
+	while (total < len) {
+		int res = send (conn_fd, (const char*)data + total, len - total, 0);
+		if (res > 0) {
+			total += res;
+			continue;
+		}
+		if (res == SOCKET_ERROR) {
+			int error = get_last_sock_error ();
+			if (error == MONO_EINTR)
+				continue;
+			if (error == MONO_EWOULDBLOCK) {
+				mono_pollfd descriptor = { 0 };
+				descriptor.fd = (int)conn_fd;
+				descriptor.events = MONO_POLLOUT;
+				do {
+					res = mono_poll (&descriptor, 1, -1);
+				} while (res < 0 && errno == EINTR);
+				if (res > 0 && (descriptor.revents & MONO_POLLOUT))
+					continue;
+			}
+		}
 		return FALSE;
-	else
-		return TRUE;
+	}
+	return TRUE;
 }
 
 /*
@@ -1440,7 +1456,6 @@ transport_handshake (void)
 	protocol_version_set = FALSE;
 
 #ifndef DISABLE_SOCKET_TRANSPORT
-#ifndef HOST_WASI
 	// FIXME: Move this somewhere else
 	/*
 	 * Set TCP_NODELAY on the socket so the client receives events/command
@@ -1459,7 +1474,6 @@ transport_handshake (void)
 
 	set_keepalive ();
 	MONO_EXIT_GC_SAFE;
-#endif // !HOST_WASI
 #endif // DISABLE_SOCKET_TRANSPORT
 
 	disconnected = FALSE;
