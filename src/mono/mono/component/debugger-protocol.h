@@ -52,7 +52,8 @@ typedef enum {
 typedef enum {
 	MDBGPROT_DATA_BREAKPOINT_FIELD = 1,
 	MDBGPROT_DATA_BREAKPOINT_ARRAY = 2,
-	MDBGPROT_DATA_BREAKPOINT_LOCAL = 3
+	MDBGPROT_DATA_BREAKPOINT_LOCAL = 3,
+	MDBGPROT_DATA_BREAKPOINT_FIELD_PATH = 4
 } MdbgProtManagedDataBreakpointLocation;
 
 typedef enum {
@@ -418,4 +419,3 @@ void m_dbgprot_buffer_free (MdbgProtBuffer *buf);
 const char* m_dbgprot_event_to_string (MdbgProtEventKind event);
 
 #endif
-
