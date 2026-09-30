@@ -72,6 +72,19 @@ stub_receive_and_process_command_from_debugger_agent (void);
 static gboolean
 stub_debugger_enabled (void);
 
+static gboolean
+stub_check_data_breakpoints (gpointer frame, gpointer ip)
+{
+	g_error ("This runtime is configured with the debugger agent disabled.");
+	return FALSE;
+}
+
+static void
+stub_forget_frame_data_breakpoints (gpointer frame)
+{
+	g_error ("This runtime is configured with the debugger agent disabled.");
+}
+
 static MonoComponentDebugger fn_table = {
 	{ MONO_COMPONENT_ITF_VERSION, &debugger_available },
 	&stub_debugger_init,
@@ -100,7 +113,8 @@ static MonoComponentDebugger fn_table = {
 	//wasi
 	&stub_receive_and_process_command_from_debugger_agent,
 	&stub_debugger_enabled,
-	&stub_debugger_enabled,
+	&stub_check_data_breakpoints,
+	&stub_forget_frame_data_breakpoints,
 };
 
 static bool

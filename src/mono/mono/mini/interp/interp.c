@@ -230,6 +230,19 @@ frame_data_allocator_pop (FrameDataAllocator *stack, InterpFrame *frame)
 	}
 }
 
+#ifdef HOST_WASI
+static gboolean debugger_enabled = FALSE;
+#endif
+
+static void
+forget_frame_data_breakpoints (InterpFrame *frame)
+{
+#ifdef HOST_WASI
+	if (debugger_enabled)
+		mono_component_debugger ()->forget_frame_data_breakpoints (frame);
+#endif
+}
+
 /*
  * reinit_frame:
  *
@@ -238,6 +251,7 @@ frame_data_allocator_pop (FrameDataAllocator *stack, InterpFrame *frame)
 static void
 reinit_frame (InterpFrame *frame, InterpFrame *parent, InterpMethod *imethod, gpointer retval, gpointer stack)
 {
+	forget_frame_data_breakpoints (frame);
 	frame->parent = parent;
 	frame->imethod = imethod;
 	frame->stack = (stackval*)stack;
@@ -261,9 +275,6 @@ static gboolean ss_enabled;
 
 static gboolean interp_init_done = FALSE;
 
-#ifdef HOST_WASI
-static gboolean debugger_enabled = FALSE;
-#endif
 
 static MonoException* do_transform_method (InterpMethod *imethod, InterpFrame *method, ThreadContext *context);
 
@@ -4131,7 +4142,7 @@ main_loop:
 		total_executed_opcodes++;
 #endif
 #ifdef HOST_WASI
-		if (debugger_enabled && mono_component_debugger ()->check_data_breakpoints ()) {
+		if (debugger_enabled && mono_component_debugger ()->check_data_breakpoints (frame, (gpointer)ip)) {
 			frame->state.ip = ip + 1;
 			do_debugger_tramp (mono_component_debugger ()->user_break, frame);
 			CHECK_RESUME_STATE (context);
@@ -4290,6 +4301,7 @@ main_loop:
 				THROW_EX (mono_domain_get ()->stack_overflow_ex, ip);
 			}
 
+			forget_frame_data_breakpoints (frame);
 			frame->imethod = new_method;
 			ip = frame->imethod->code;
 			MINT_IN_BREAK;
@@ -8212,6 +8224,7 @@ resume:
 	frame_data_allocator_pop (&context->data_stack, frame);
 	// fall through
 exit_frame:
+	forget_frame_data_breakpoints (frame);
 	g_assert_checked (frame->imethod);
 
 	if (frame->parent && frame->parent->state.ip) {
@@ -8231,8 +8244,10 @@ exit_frame:
 		goto main_loop;
 	}
 exit_clause:
-	if (!clause_args)
+	if (!clause_args) {
+		forget_frame_data_breakpoints (frame);
 		context->stack_pointer = (guchar*)frame->stack;
+	}
 
 	DEBUG_LEAVE ();
 }

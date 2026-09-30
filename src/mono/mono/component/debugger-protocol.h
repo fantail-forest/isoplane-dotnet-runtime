@@ -51,7 +51,8 @@ typedef enum {
 
 typedef enum {
 	MDBGPROT_DATA_BREAKPOINT_FIELD = 1,
-	MDBGPROT_DATA_BREAKPOINT_ARRAY = 2
+	MDBGPROT_DATA_BREAKPOINT_ARRAY = 2,
+	MDBGPROT_DATA_BREAKPOINT_LOCAL = 3
 } MdbgProtManagedDataBreakpointLocation;
 
 typedef enum {
