@@ -5380,6 +5380,13 @@ typedef struct {
 	Buffer previous;
 	Buffer current;
 	gboolean hit;
+	gboolean expired;
+	gpointer frame;
+	int frame_id;
+	MonoInternalThread *thread;
+	guint8 *code_start;
+	MonoDebugMethodJitInfo *local_debug;
+	int scope_start, scope_end;
 } ManagedDataBreakpoint;
 
 static GPtrArray *managed_data_breakpoints;
@@ -5395,6 +5402,8 @@ free_managed_data_breakpoints (GPtrArray *breakpoints)
 			mono_gchandle_free_internal (watch->owner);
 		if (watch->previous_value)
 			mono_gchandle_free_internal (watch->previous_value);
+		if (watch->local_debug)
+			mono_debug_free_method_jit_info (watch->local_debug);
 		buffer_free (&watch->previous);
 		buffer_free (&watch->current);
 		g_free (watch);
@@ -5438,10 +5447,100 @@ reset_managed_data_breakpoints (void)
 		return;
 	for (guint i = 0; i < managed_data_breakpoints->len; i++) {
 		ManagedDataBreakpoint *watch = (ManagedDataBreakpoint *)g_ptr_array_index (managed_data_breakpoints, i);
+		if (watch->expired)
+			continue;
 		watch->previous.p = watch->previous.buf;
 		snapshot_managed_data_breakpoint (watch, &watch->previous);
 		watch->hit = FALSE;
 	}
+}
+
+static ErrorCode
+read_local_data_breakpoint (MonoObject *owner, int frame_id, int index, ManagedDataBreakpoint *watch)
+{
+	if (!owner || owner->vtable->klass != mono_defaults.thread_class)
+		return ERR_INVALID_OBJECT;
+	MonoInternalThread *thread = THREAD_TO_INTERNAL ((MonoThread *)owner);
+	GET_TLS_DATA_FROM_THREAD (thread);
+	if (!tls)
+		return ERR_INVALID_OBJECT;
+	gpointer retained_frame = NULL;
+	if (managed_data_breakpoints) {
+		for (guint i = 0; i < managed_data_breakpoints->len; i++) {
+			ManagedDataBreakpoint *existing = (ManagedDataBreakpoint *)g_ptr_array_index (managed_data_breakpoints, i);
+			if (existing->id != watch->id)
+				continue;
+			if (existing->expired || !existing->frame || existing->thread != thread
+				|| existing->frame_id != frame_id || existing->index != index)
+				return ERR_INVALID_ARGUMENT;
+			/* WASM frame IDs are stack indices, which change when a callee is entered. */
+			retained_frame = existing->frame;
+			break;
+		}
+	}
+	StackFrame *frame = NULL;
+	for (int i = 0; i < tls->frame_count; i++) {
+		if (retained_frame ? tls->frames [i]->interp_frame == retained_frame : tls->frames [i]->id == frame_id) {
+			frame = tls->frames [i];
+			break;
+		}
+	}
+	if (!frame)
+		return ERR_INVALID_FRAMEID;
+	if (!frame->interp_frame || !frame->de.ji || !frame->de.ji->is_interp)
+		return ERR_ABSENT_INFORMATION;
+	ERROR_DECL (error);
+	MonoMethodHeader *header = mono_method_get_header_checked (frame->actual_method, error);
+	if (!is_ok (error)) {
+		mono_error_cleanup (error);
+		return ERR_ABSENT_INFORMATION;
+	}
+	ErrorCode result = ERR_INVALID_ARGUMENT;
+	if (index < 0 || index >= header->num_locals)
+		goto done;
+	MonoType *type = header->locals [index];
+	if (m_type_is_byref (type) || type->type == MONO_TYPE_PTR || type->type == MONO_TYPE_FNPTR
+		|| type->type == MONO_TYPE_TYPEDBYREF)
+		goto done;
+	MonoClass *klass = mono_class_from_mono_type_internal (type);
+	if (m_class_is_byreflike (klass))
+		goto done;
+	MonoDebugLocalsInfo *locals = mono_debug_lookup_locals (frame->de.method);
+	gboolean found = FALSE;
+	if (locals) {
+		for (int i = 0; i < locals->num_locals; i++) {
+			MonoDebugLocalVar *local = &locals->locals [i];
+			int start = local->block ? local->block->start_offset : 0;
+			int end = local->block ? local->block->end_offset : header->code_size;
+			if (local->index == index && frame->il_offset >= start && frame->il_offset < end) {
+				watch->scope_start = start;
+				watch->scope_end = end;
+				found = TRUE;
+				break;
+			}
+		}
+		mono_debug_free_locals (locals);
+	}
+	if (!found) {
+		result = ERR_ABSENT_INFORMATION;
+		goto done;
+	}
+	watch->local_debug = mono_debug_find_method (frame->de.method, frame->de.domain);
+	if (!watch->local_debug || !watch->local_debug->num_line_numbers) {
+		result = ERR_ABSENT_INFORMATION;
+		goto done;
+	}
+	watch->type = m_class_get_byval_arg (klass);
+	watch->frame = frame->interp_frame;
+	watch->frame_id = frame_id;
+	watch->thread = thread;
+	watch->index = index;
+	watch->code_start = (guint8 *)frame->de.ji->code_start;
+	watch->static_data = (guint8 *)mini_get_interp_callbacks_api ()->frame_get_local (frame->interp_frame, index);
+	result = ERR_NONE;
+done:
+	mono_metadata_free_mh (header);
+	return result;
 }
 
 static ErrorCode
@@ -5453,7 +5552,7 @@ read_managed_data_breakpoint (guint8 **p, guint8 *end, ManagedDataBreakpoint *wa
 	watch->id = decode_int (*p, p, end);
 	int kind = decode_byte (*p, p, end);
 	int object_id = decode_objid (*p, p, end);
-	if (watch->id <= 0 || (kind != MDBGPROT_DATA_BREAKPOINT_FIELD && kind != MDBGPROT_DATA_BREAKPOINT_ARRAY))
+	if (watch->id <= 0 || (kind != MDBGPROT_DATA_BREAKPOINT_FIELD && kind != MDBGPROT_DATA_BREAKPOINT_ARRAY && kind != MDBGPROT_DATA_BREAKPOINT_LOCAL))
 		return ERR_INVALID_ARGUMENT;
 	MonoObject *owner = NULL;
 	if (object_id) {
@@ -5461,7 +5560,16 @@ read_managed_data_breakpoint (guint8 **p, guint8 *end, ManagedDataBreakpoint *wa
 		if (err != ERR_NONE)
 			return err;
 	}
-	if (kind == MDBGPROT_DATA_BREAKPOINT_FIELD) {
+	if (kind == MDBGPROT_DATA_BREAKPOINT_LOCAL) {
+		if (end - *p < 8)
+			return ERR_INVALID_ARGUMENT;
+		int frame_id = decode_id (*p, p, end);
+		int index = decode_int (*p, p, end);
+		err = read_local_data_breakpoint (owner, frame_id, index, watch);
+		if (err != ERR_NONE)
+			return err;
+		owner = NULL;
+	} else if (kind == MDBGPROT_DATA_BREAKPOINT_FIELD) {
 		guint8 *field_packet = *p;
 		int field_id = decode_id (*p, p, end);
 		if (field_id <= 0 || !ids [ID_FIELD] || GINT_TO_UINT32 (field_id) > ids [ID_FIELD]->len)
@@ -5539,6 +5647,26 @@ managed_data_breakpoint_command (guint8 *p, guint8 *end, Buffer *buf)
 				watch->hit = FALSE;
 			}
 		}
+		int expired = 0;
+		if (managed_data_breakpoints) {
+			for (guint i = 0; i < managed_data_breakpoints->len; i++)
+				if (((ManagedDataBreakpoint *)g_ptr_array_index (managed_data_breakpoints, i))->expired)
+					expired++;
+		}
+		buffer_add_int (buf, expired);
+		if (managed_data_breakpoints) {
+			GPtrArray *removed = g_ptr_array_new ();
+			for (guint i = 0; i < managed_data_breakpoints->len;) {
+				ManagedDataBreakpoint *watch = (ManagedDataBreakpoint *)g_ptr_array_index (managed_data_breakpoints, i);
+				if (watch->expired) {
+					buffer_add_int (buf, watch->id);
+					g_ptr_array_add (removed, watch);
+					g_ptr_array_remove_index (managed_data_breakpoints, i);
+				} else
+					i++;
+			}
+			free_managed_data_breakpoints (removed);
+		}
 		return ERR_NONE;
 	}
 	if (operation != MDBGPROT_DATA_BREAKPOINT_SET || end - p < 4)
@@ -5574,7 +5702,7 @@ managed_data_breakpoint_command (guint8 *p, guint8 *end, Buffer *buf)
 #endif
 
 static gboolean
-check_managed_data_breakpoints (void)
+check_managed_data_breakpoints (gpointer frame, gpointer ip)
 {
 #ifdef HOST_WASI
 	if (!managed_data_breakpoints || managed_data_breakpoints->len == 0 || wasi_suspend_count > 0
@@ -5583,6 +5711,25 @@ check_managed_data_breakpoints (void)
 	gboolean changed = FALSE;
 	for (guint i = 0; i < managed_data_breakpoints->len; i++) {
 		ManagedDataBreakpoint *watch = (ManagedDataBreakpoint *)g_ptr_array_index (managed_data_breakpoints, i);
+		if (watch->frame == frame && !watch->expired) {
+			int offset = (int)((guint8 *)ip - watch->code_start);
+			int il_offset = -1;
+			for (int j = watch->local_debug->num_line_numbers - 1; j >= 0; j--) {
+				MonoDebugLineNumberEntry entry = watch->local_debug->line_numbers [j];
+				if (entry.native_offset <= offset) {
+					il_offset = entry.il_offset;
+					break;
+				}
+			}
+			if (il_offset < watch->scope_start || il_offset >= watch->scope_end) {
+				watch->expired = TRUE;
+				watch->static_data = NULL;
+			}
+		}
+		if (watch->expired) {
+			changed = TRUE;
+			continue;
+		}
 		if (watch->previous_value) {
 			MonoObject *previous = mono_gchandle_get_target_internal (watch->previous_value);
 			if (memcmp (managed_data_breakpoint_address (watch), mono_object_unbox_internal (previous),
@@ -5607,6 +5754,22 @@ check_managed_data_breakpoints (void)
 	return changed;
 #else
 	return FALSE;
+#endif
+}
+
+static void
+forget_frame_data_breakpoints (gpointer frame)
+{
+#ifdef HOST_WASI
+	if (!managed_data_breakpoints)
+		return;
+	for (guint i = 0; i < managed_data_breakpoints->len; i++) {
+		ManagedDataBreakpoint *watch = (ManagedDataBreakpoint *)g_ptr_array_index (managed_data_breakpoints, i);
+		if (watch->frame == frame) {
+			watch->expired = TRUE;
+			watch->static_data = NULL;
+		}
+	}
 #endif
 }
 
@@ -11602,6 +11765,7 @@ debugger_agent_add_function_pointers(MonoComponentDebugger* fn_table)
 	fn_table->send_enc_delta = send_enc_delta;
 	fn_table->debugger_enabled = debugger_agent_enabled;
 	fn_table->check_data_breakpoints = check_managed_data_breakpoints;
+	fn_table->forget_frame_data_breakpoints = forget_frame_data_breakpoints;
 #if defined(HOST_WASI)
 	fn_table->receive_and_process_command_from_debugger_agent = mono_debugger_agent_receive_and_process_command;
 	fn_table->mono_wasm_breakpoint_hit = mono_wasi_breakpoint_hit;
