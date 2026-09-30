@@ -200,7 +200,8 @@ typedef struct MonoComponentDebugger {
 	//wasi
 	gboolean (*receive_and_process_command_from_debugger_agent) (void);
 	gboolean (*debugger_enabled) (void);
-	gboolean (*check_data_breakpoints) (void);
+	gboolean (*check_data_breakpoints) (gpointer frame, gpointer ip);
+	void (*forget_frame_data_breakpoints) (gpointer frame);
 } MonoComponentDebugger;
 
 
