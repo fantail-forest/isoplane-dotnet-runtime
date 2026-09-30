@@ -5374,6 +5374,7 @@ typedef struct {
 	MonoGCHandle previous_value;
 	MonoClass *value_class;
 	MonoClassField *field;
+	GPtrArray *field_path;
 	int index;
 	guint8 *static_data;
 	MonoType *type;
@@ -5404,6 +5405,8 @@ free_managed_data_breakpoints (GPtrArray *breakpoints)
 			mono_gchandle_free_internal (watch->previous_value);
 		if (watch->local_debug)
 			mono_debug_free_method_jit_info (watch->local_debug);
+		if (watch->field_path)
+			g_ptr_array_free (watch->field_path, TRUE);
 		buffer_free (&watch->previous);
 		buffer_free (&watch->current);
 		g_free (watch);
@@ -5424,6 +5427,9 @@ managed_data_breakpoint_address (ManagedDataBreakpoint *watch)
 			address = (guint8 *)array->vector + (gsize)watch->index * mono_array_element_size (owner->vtable->klass);
 		}
 	}
+	if (watch->field_path)
+		for (guint i = 0; i < watch->field_path->len; i++)
+			address = (guint8 *)mono_vtype_get_field_addr (address, (MonoClassField *)g_ptr_array_index (watch->field_path, i));
 	return address;
 }
 
@@ -5544,6 +5550,36 @@ done:
 }
 
 static ErrorCode
+read_data_breakpoint_field_path (guint8 **p, guint8 *end, ManagedDataBreakpoint *watch)
+{
+	if (end - *p < 4)
+		return ERR_INVALID_ARGUMENT;
+	int count = decode_int (*p, p, end);
+	if (count <= 0 || count > (end - *p) / 4)
+		return ERR_INVALID_ARGUMENT;
+	watch->field_path = g_ptr_array_new ();
+	for (int i = 0; i < count; i++) {
+		MonoClass *container = mono_class_from_mono_type_internal (watch->type);
+		if (!m_class_is_valuetype (container))
+			return ERR_INVALID_FIELDID;
+		guint8 *field_packet = *p;
+		int field_id = decode_id (*p, p, end);
+		if (field_id <= 0 || !ids [ID_FIELD] || GINT_TO_UINT32 (field_id) > ids [ID_FIELD]->len)
+			return ERR_INVALID_FIELDID;
+		ErrorCode err = ERR_NONE;
+		MonoClassField *field = decode_fieldid (field_packet, p, end, NULL, &err);
+		if (err != ERR_NONE)
+			return err;
+		if (m_field_get_parent (field) != container || m_field_is_from_update (field)
+			|| (field->type->attrs & FIELD_ATTRIBUTE_STATIC))
+			return ERR_INVALID_FIELDID;
+		g_ptr_array_add (watch->field_path, field);
+		watch->type = field->type;
+	}
+	return ERR_NONE;
+}
+
+static ErrorCode
 read_managed_data_breakpoint (guint8 **p, guint8 *end, ManagedDataBreakpoint *watch)
 {
 	ErrorCode err = ERR_NONE;
@@ -5552,7 +5588,7 @@ read_managed_data_breakpoint (guint8 **p, guint8 *end, ManagedDataBreakpoint *wa
 	watch->id = decode_int (*p, p, end);
 	int kind = decode_byte (*p, p, end);
 	int object_id = decode_objid (*p, p, end);
-	if (watch->id <= 0 || (kind != MDBGPROT_DATA_BREAKPOINT_FIELD && kind != MDBGPROT_DATA_BREAKPOINT_ARRAY && kind != MDBGPROT_DATA_BREAKPOINT_LOCAL))
+	if (watch->id <= 0 || (kind != MDBGPROT_DATA_BREAKPOINT_FIELD && kind != MDBGPROT_DATA_BREAKPOINT_ARRAY && kind != MDBGPROT_DATA_BREAKPOINT_LOCAL && kind != MDBGPROT_DATA_BREAKPOINT_FIELD_PATH))
 		return ERR_INVALID_ARGUMENT;
 	MonoObject *owner = NULL;
 	if (object_id) {
@@ -5569,7 +5605,7 @@ read_managed_data_breakpoint (guint8 **p, guint8 *end, ManagedDataBreakpoint *wa
 		if (err != ERR_NONE)
 			return err;
 		owner = NULL;
-	} else if (kind == MDBGPROT_DATA_BREAKPOINT_FIELD) {
+	} else if (kind == MDBGPROT_DATA_BREAKPOINT_FIELD || kind == MDBGPROT_DATA_BREAKPOINT_FIELD_PATH) {
 		guint8 *field_packet = *p;
 		int field_id = decode_id (*p, p, end);
 		if (field_id <= 0 || !ids [ID_FIELD] || GINT_TO_UINT32 (field_id) > ids [ID_FIELD]->len)
@@ -5601,6 +5637,11 @@ read_managed_data_breakpoint (guint8 **p, guint8 *end, ManagedDataBreakpoint *wa
 		if (watch->index < 0 || GINT_TO_UINT32 (watch->index) >= ((MonoArray *)owner)->max_length)
 			return ERR_INVALID_ARGUMENT;
 		watch->type = m_class_get_byval_arg (m_class_get_element_class (owner->vtable->klass));
+	}
+	if (kind == MDBGPROT_DATA_BREAKPOINT_FIELD_PATH) {
+		err = read_data_breakpoint_field_path (p, end, watch);
+		if (err != ERR_NONE)
+			return err;
 	}
 	if (owner)
 		watch->owner = mono_gchandle_new_internal (owner, FALSE);
