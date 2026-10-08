@@ -133,6 +133,7 @@ struct InterpMethod {
 	MonoExceptionClause *clauses; // num_clauses
 	void **data_items;
 	guint32 *local_offsets;
+	MonoType **debug_local_types;
 	guint32 *arg_offsets;
 	guint32 *clause_data_offsets;
 	gpointer jit_call_info;
@@ -152,6 +153,7 @@ struct InterpMethod {
 	int num_clauses; // clauses
 	int transformed; // boolean
 	unsigned int param_count;
+	unsigned int debug_local_count;
 	unsigned int hasthis; // boolean
 	MonoProfilerCallInstrumentationFlags prof_flags;
 	InterpMethodCodeType code_type;
