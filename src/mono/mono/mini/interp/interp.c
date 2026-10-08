@@ -8880,6 +8880,21 @@ interp_frame_get_arg (MonoInterpFrameHandle frame, int pos)
 	return (char*)iframe->stack + get_arg_offset_fast (iframe->imethod, NULL, pos + iframe->imethod->hasthis);
 }
 
+static MonoType*
+interp_frame_get_local_type (MonoInterpFrameHandle frame, int pos, MonoError *error)
+{
+	InterpMethod *method = ((InterpFrame*)frame)->imethod;
+	if (!method->debug_il_code) {
+		mono_error_set_not_supported (error, "The interpreter frame has no retained local types.");
+		return NULL;
+	}
+	if (pos < 0 || (guint32)pos >= method->debug_local_count) {
+		mono_error_set_argument (error, "pos", "The local does not exist in the active interpreter frame.");
+		return NULL;
+	}
+	return method->debug_local_types [pos];
+}
+
 static gpointer
 interp_frame_get_local (MonoInterpFrameHandle frame, int pos)
 {
