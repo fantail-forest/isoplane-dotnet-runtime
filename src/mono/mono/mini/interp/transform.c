@@ -4613,6 +4613,14 @@ save_seq_points (TransformData *td, MonoJitInfo *jinfo)
 	g_byte_array_free (array, TRUE);
 
 	jinfo->seq_points = info;
+	td->rtm->debug_seq_points_size = 0;
+	if (mono_metadata_update_enabled (NULL)) {
+		// Publishing a newer method frees the lookup table's map, but live frames retain this JIT info.
+		jinfo->seq_points = (MonoSeqPointInfo*)imethod_alloc0 (td, seq_info_size);
+		memcpy (jinfo->seq_points, info, seq_info_size);
+		td->rtm->debug_seq_points_size = seq_info_size;
+		mono_seq_point_info_free (info);
+	}
 }
 
 static void
@@ -4673,6 +4681,13 @@ interp_method_compute_offsets (TransformData *td, InterpMethod *imethod, MonoMet
 
 	imethod->local_offsets = (guint32*)imethod_alloc0 (td, num_il_locals * sizeof(guint32));
 	if (mono_metadata_update_enabled (NULL)) {
+		imethod->debug_il_code = header->code;
+		imethod->debug_il_size = header->code_size;
+		imethod->debug_il_clauses = NULL;
+		if (header->num_clauses) {
+			imethod->debug_il_clauses = (MonoExceptionClause*)imethod_alloc0 (td, header->num_clauses * sizeof (MonoExceptionClause));
+			memcpy (imethod->debug_il_clauses, header->clauses, header->num_clauses * sizeof (MonoExceptionClause));
+		}
 		imethod->debug_local_count = num_il_locals;
 		imethod->debug_local_types = (MonoType**)imethod_alloc0 (td, num_il_locals * sizeof (MonoType*));
 		for (int i = 0; i < num_il_locals; ++i)
@@ -10155,8 +10170,14 @@ mono_interp_transform_method (InterpMethod *imethod, ThreadContext *context, Mon
 		// FIXME Publishing of seq points seems to be racy with tiereing. We can have both tiered and untiered method
 		// running at the same time. We could therefore get the optimized imethod seq points for the unoptimized method.
 		gpointer seq_points = dn_simdhash_ght_get_value_or_default (jit_mm->seq_points, imethod->method);
-		if (!seq_points || seq_points != imethod->jinfo->seq_points)
-			dn_simdhash_ght_replace (jit_mm->seq_points, imethod->method, imethod->jinfo->seq_points);
+		if (!seq_points || seq_points != imethod->jinfo->seq_points) {
+			gpointer published = imethod->jinfo->seq_points;
+			if (imethod->debug_seq_points_size) {
+				published = g_malloc (imethod->debug_seq_points_size);
+				memcpy (published, imethod->jinfo->seq_points, imethod->debug_seq_points_size);
+			}
+			dn_simdhash_ght_replace (jit_mm->seq_points, imethod->method, published);
+		}
 	}
 	jit_mm_unlock (jit_mm);
 

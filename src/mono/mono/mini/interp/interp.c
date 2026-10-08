@@ -8718,12 +8718,12 @@ interp_frame_get_jit_info (MonoInterpFrameHandle frame)
 static gboolean
 same_debug_frame_layout (InterpMethod *previous, InterpMethod *updated, MonoError *error)
 {
-	if (!mini_get_debug_options ()->mdb_optimizations || mono_interp_opt != 0) {
-		mono_error_set_not_supported (error, "Remapping an updated frame requires interpreter optimizations to be disabled by the debugger.");
+	if (!previous->debug_il_code || !updated->debug_il_code) {
+		mono_error_set_not_supported (error, "The interpreter did not retain the frame metadata required for Hot Reload remapping.");
 		return FALSE;
 	}
-	if (previous->num_clauses || updated->num_clauses) {
-		mono_error_set_not_supported (error, "Remapping an updated frame's exception handlers is not supported.");
+	if (!mini_get_debug_options ()->mdb_optimizations || mono_interp_opt != 0) {
+		mono_error_set_not_supported (error, "Remapping an updated frame requires interpreter optimizations to be disabled by the debugger.");
 		return FALSE;
 	}
 	if (previous->alloca_size != updated->alloca_size || previous->locals_size != updated->locals_size) {
@@ -8767,25 +8767,107 @@ same_debug_frame_layout (InterpMethod *previous, InterpMethod *updated, MonoErro
 	return TRUE;
 }
 
+static gboolean
+ip_in_debug_handler (InterpMethod *method, const guint16 *ip)
+{
+	guint32 offset = GPTRDIFF_TO_UINT32 (ip - method->code);
+	for (int i = 0; i < method->num_clauses; ++i) {
+		MonoExceptionClause *clause = &method->clauses [i];
+		if (offset >= clause->handler_offset && offset < clause->handler_offset + clause->handler_len)
+			return TRUE;
+		if ((clause->flags & MONO_EXCEPTION_CLAUSE_FILTER)
+			&& offset >= clause->data.filter_offset && offset < clause->handler_offset)
+			return TRUE;
+	}
+	return FALSE;
+}
+
+static gboolean
+same_debug_exception_state (InterpFrame *frame, InterpMethod *updated, const guint16 *destination, MonoError *error)
+{
+	InterpMethod *previous = frame->imethod;
+	if (previous->num_clauses != updated->num_clauses) {
+		mono_error_set_not_supported (error, "Hot Reload changed the active method's exception region count.");
+		return FALSE;
+	}
+	for (int i = 0; i < previous->num_clauses; ++i) {
+		if (previous->clauses [i].flags != updated->clauses [i].flags
+			|| previous->clause_data_offsets [i] != updated->clause_data_offsets [i]) {
+			mono_error_set_not_supported (error, "Hot Reload changed exception region %d's kind or storage offset.", i);
+			return FALSE;
+		}
+	}
+	if (ip_in_debug_handler (previous, (const guint16*)interp_frame_get_ip (frame))
+		|| ip_in_debug_handler (updated, destination)) {
+		mono_error_set_not_supported (error, "Remapping edited code while executing a catch, finally or filter is not supported.");
+		return FALSE;
+	}
+	return TRUE;
+}
+
+static gboolean
+same_debug_il (InterpMethod *previous, InterpMethod *updated)
+{
+	if (!previous->debug_il_code || !updated->debug_il_code
+		|| previous->debug_il_size != updated->debug_il_size
+		|| memcmp (previous->debug_il_code, updated->debug_il_code, previous->debug_il_size)
+		|| previous->num_clauses != updated->num_clauses)
+		return FALSE;
+	for (int i = 0; i < previous->num_clauses; ++i) {
+		MonoExceptionClause *old_clause = &previous->debug_il_clauses [i];
+		MonoExceptionClause *new_clause = &updated->debug_il_clauses [i];
+		if (old_clause->flags != new_clause->flags
+			|| old_clause->try_offset != new_clause->try_offset || old_clause->try_len != new_clause->try_len
+			|| old_clause->handler_offset != new_clause->handler_offset || old_clause->handler_len != new_clause->handler_len)
+			return FALSE;
+		if (old_clause->flags == MONO_EXCEPTION_CLAUSE_FILTER && old_clause->data.filter_offset != new_clause->data.filter_offset)
+			return FALSE;
+		if (old_clause->flags == MONO_EXCEPTION_CLAUSE_NONE && old_clause->data.catch_class != new_clause->data.catch_class)
+			return FALSE;
+	}
+	return TRUE;
+}
+
+static InterpMethod*
+debug_frame_method (InterpMethod *previous, MonoError *error)
+{
+	InterpMethod *updated = mono_interp_get_imethod (previous->method);
+
+	if (!updated->transformed) {
+		mono_interp_transform_method (updated, get_context (), error);
+		return_val_if_nok (error, NULL);
+	}
+	if (previous != updated && same_debug_il (previous, updated)) {
+		if (!same_debug_frame_layout (previous, updated, error))
+			return NULL;
+		// A compiler delta may reproduce an unchanged body; retain its live handler continuations.
+		return previous;
+	}
+	return updated;
+}
+
 static gpointer
 interp_frame_set_ip (MonoInterpFrameHandle handle, gint32 il_offset, MonoError *error)
 {
 	InterpFrame *frame = (InterpFrame*)handle;
 	InterpMethod *previous = frame->imethod;
-	InterpMethod *updated = mono_interp_get_imethod (previous->method);
-	if (!updated->transformed) {
-		mono_interp_transform_method (updated, get_context (), error);
-		return_val_if_nok (error, NULL);
-	}
+	InterpMethod *updated = debug_frame_method (previous, error);
+	return_val_if_nok (error, NULL);
 	if (previous->code != updated->code && !same_debug_frame_layout (previous, updated, error))
 		return NULL;
 	SeqPoint point;
-	if (!mono_find_seq_point (updated->method, il_offset, NULL, &point)) {
-		mono_error_set_argument (error, "il_offset", "The updated method has no sequence point at the requested offset.");
+	if (il_offset < 0 || !updated->jinfo->seq_points
+		|| !mono_seq_point_find_by_il_offset (updated->jinfo->seq_points, il_offset, &point)
+		|| point.native_offset < 0 || point.native_offset >= updated->jinfo->code_size) {
+		mono_error_set_argument (error, "il_offset", "The method has no executable sequence point at the requested offset.");
 		return NULL;
 	}
+	guint16 *destination = (guint16*)((guint8*)updated->jinfo->code_start + point.native_offset);
+	if (previous->code != updated->code && !same_debug_exception_state (frame, updated, destination, error))
+		return NULL;
 	frame->imethod = updated;
-	return (guint8*)updated->jinfo->code_start + point.native_offset;
+	frame->state.ip = destination + 1;
+	return destination;
 }
 
 static gpointer

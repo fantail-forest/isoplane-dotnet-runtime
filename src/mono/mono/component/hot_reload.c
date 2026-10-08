@@ -346,18 +346,16 @@ hot_reload_update_enabled (int *modifiable_assemblies_out)
 	static gboolean inited = FALSE;
 	static int modifiable = MONO_MODIFIABLE_ASSM_NONE;
 
-	gboolean result = FALSE;
 	if (!inited) {
 		modifiable = hot_reload_update_enabled_slow_check (NULL);
 		inited = TRUE;
-		result = (modifiable != MONO_MODIFIABLE_ASSM_NONE);
-		if (result) {
+		if (modifiable != MONO_MODIFIABLE_ASSM_NONE) {
 			mono_trace (G_LOG_LEVEL_DEBUG, MONO_TRACE_METADATA_UPDATE, "Metadata update enabled for debuggable assemblies");
 		}
 	}
 	if (modifiable_assemblies_out)
 		*modifiable_assemblies_out = modifiable;
-	return result;
+	return modifiable != MONO_MODIFIABLE_ASSM_NONE;
 }
 
 /**
