@@ -776,7 +776,7 @@ get_method_enc_debug_info (MonoMethod *method, MonoDebugInformationEnc **mdie_ou
 			return TRUE;
 		} else {
 			/// an added method without debug info; maybe the delta came in without a PDB delta
-			gboolean added_method = idx >= table_info_get_rows (&img->tables[MONO_TABLE_METHOD]);
+			gboolean added_method = idx > table_info_get_rows (&img->tables[MONO_TABLE_METHOD]);
 			if (added_method)
 				return TRUE;
 		}
@@ -1199,7 +1199,7 @@ mono_debug_get_seq_points (MonoDebugMethodInfo *minfo, char **source_file, GPtrA
 			if (source_file)
 				*source_file = NULL;
 			if (source_file_list)
-				*source_file_list = NULL;
+				*source_file_list = g_ptr_array_new ();
 			if (source_files)
 				*source_files = NULL;
 			if (seq_points)
