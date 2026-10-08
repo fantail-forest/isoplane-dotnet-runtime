@@ -51,6 +51,13 @@ stub_frame_get_arg (MonoInterpFrameHandle frame, int pos)
 	return NULL;
 }
 
+static MonoType*
+stub_frame_get_local_type (MonoInterpFrameHandle frame, int pos, MonoError *error)
+{
+	mono_error_set_not_supported (error, "Reading interpreter local types requires the interpreter component.");
+	return NULL;
+}
+
 static gpointer
 stub_frame_get_local (MonoInterpFrameHandle frame, int pos)
 {

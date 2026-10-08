@@ -5368,6 +5368,21 @@ buffer_add_value (Buffer *buf, MonoType *t, void *addr, MonoDomain *domain)
 	buffer_add_value_full (buf, t, addr, domain, FALSE, NULL, 1);
 }
 
+static MonoType*
+frame_local_type (StackFrame *frame, MonoMethodHeader *header, int index)
+{
+	if (frame->de.ji->is_interp && mono_metadata_update_enabled (NULL)) {
+		ERROR_DECL (error);
+		MonoType *type = mini_get_interp_callbacks_api ()->frame_get_local_type (frame->interp_frame, index, error);
+		if (!is_ok (error)) {
+			mono_error_cleanup (error);
+			return NULL;
+		}
+		return type;
+	}
+	return index >= 0 && index < header->num_locals ? header->locals [index] : NULL;
+}
+
 #ifdef HOST_WASI
 typedef struct {
 	int id;
@@ -5503,9 +5518,9 @@ read_local_data_breakpoint (MonoObject *owner, int frame_id, int index, ManagedD
 		return ERR_ABSENT_INFORMATION;
 	}
 	ErrorCode result = ERR_INVALID_ARGUMENT;
-	if (index < 0 || index >= header->num_locals)
+	MonoType *type = frame_local_type (frame, header, index);
+	if (!type)
 		goto done;
-	MonoType *type = header->locals [index];
 	if (m_type_is_byref (type) || type->type == MONO_TYPE_PTR || type->type == MONO_TYPE_FNPTR
 		|| type->type == MONO_TYPE_TYPEDBYREF)
 		goto done;
@@ -10676,17 +10691,22 @@ frame_commands (int command, guint8 *p, guint8 *end, Buffer *buf)
 				}
 
 				PRINT_DEBUG_MSG (4, "[dbg]   send local %d.\n", pos);
+				MonoType *type = frame_local_type (frame, header, pos);
+				if (!type) {
+					mono_metadata_free_mh (header);
+					return ERR_INVALID_ARGUMENT;
+				}
 
 				if (frame->de.ji->is_interp) {
 					guint8 *addr;
 
 					addr = (guint8*)mini_get_interp_callbacks_api ()->frame_get_local (frame->interp_frame, pos);
 
-					buffer_add_value_full (buf, header->locals [pos], addr, frame->de.domain, FALSE, NULL, 1);
+					buffer_add_value_full (buf, type, addr, frame->de.domain, FALSE, NULL, 1);
 				} else {
 					g_assert (pos >= 0 && GINT_TO_UINT32(pos) < jit->num_locals);
 
-					add_var (buf, jit, header->locals [pos], &jit->locals [pos], &frame->ctx, frame->de.domain, FALSE);
+					add_var (buf, jit, type, &jit->locals [pos], &frame->ctx, frame->de.domain, FALSE);
 				}
 			}
 		}
@@ -10730,10 +10750,15 @@ frame_commands (int command, guint8 *p, guint8 *end, Buffer *buf)
 						mono_debug_free_locals (locals);
 					}
 				}
-				g_assert (pos >= 0 && GINT_TO_UINT32(pos) < jit->num_locals);
-
-				t = header->locals [pos];
-				var = &jit->locals [pos];
+				t = frame_local_type (frame, header, pos);
+				if (!t) {
+					mono_metadata_free_mh (header);
+					return ERR_INVALID_ARGUMENT;
+				}
+				if (!frame->de.ji->is_interp) {
+					g_assert (GINT_TO_UINT32(pos) < jit->num_locals);
+					var = &jit->locals [pos];
+				}
 			}
 
 			if (MONO_TYPE_IS_REFERENCE (t))
