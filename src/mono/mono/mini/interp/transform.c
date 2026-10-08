@@ -4675,6 +4675,12 @@ interp_method_compute_offsets (TransformData *td, InterpMethod *imethod, MonoMet
 	int target_vars_capacity = num_locals + 64;
 
 	imethod->local_offsets = (guint32*)imethod_alloc0 (td, num_il_locals * sizeof(guint32));
+	if (mono_metadata_update_enabled (NULL)) {
+		imethod->debug_local_count = num_il_locals;
+		imethod->debug_local_types = (MonoType**)imethod_alloc0 (td, num_il_locals * sizeof (MonoType*));
+		for (int i = 0; i < num_il_locals; ++i)
+			imethod->debug_local_types [i] = mono_metadata_type_dup (m_class_get_image (imethod->method->klass), header->locals [i]);
+	}
 	td->vars = (InterpVar*)g_malloc0 (target_vars_capacity * sizeof (InterpVar));
 	td->vars_size = num_locals;
 	td->vars_capacity = target_vars_capacity;
