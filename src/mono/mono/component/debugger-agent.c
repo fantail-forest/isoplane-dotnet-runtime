@@ -10486,7 +10486,7 @@ thread_commands (int command, guint8 *p, guint8 *end, Buffer *buf)
 		if (tls->frames [0]->de.ji->is_interp) {
 			MonoJitTlsData *jit_data = thread->thread_info->jit_data;
 			ERROR_DECL (error);
-			gpointer destination = mini_get_interp_callbacks_api ()->frame_set_ip (tls->frames [0]->interp_frame, GINT64_TO_INT32 (il_offset), error);
+			gpointer destination = mini_get_interp_callbacks_api ()->frame_set_ip (tls->frames [0]->interp_frame, jit_data, GINT64_TO_INT32 (il_offset), error);
 			if (!is_ok (error)) {
 				add_error_string (buf, mono_error_get_message (error));
 				mono_error_cleanup (error);

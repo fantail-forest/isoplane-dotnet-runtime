@@ -20,6 +20,7 @@
 #include "debugger-engine.h"
 #include "debugger-state-machine.h"
 #include <mono/metadata/debug-internals.h>
+#include <mono/metadata/metadata-internals.h>
 
 static void mono_de_ss_start (SingleStepReq *ss_req, SingleStepArgs *ss_args);
 static gboolean mono_de_ss_update (SingleStepReq *req, MonoJitInfo *ji, SeqPoint *sp, void *tls, MonoContext *ctx, MonoMethod* method);
@@ -345,6 +346,19 @@ set_bp_in_method (MonoMethod *method, MonoSeqPointInfo *seq_points, MonoBreakpoi
 	(void)mono_jit_search_all_backends_for_jit_info (method, &ji);
 	g_assert (ji);
 
+	if (ji->is_interp && mono_metadata_has_updates_api ()) {
+		ERROR_DECL (compilation_error);
+		ji = mini_get_interp_callbacks_api ()->compile_interp_method (method, compilation_error);
+		if (!is_ok (compilation_error)) {
+			if (error)
+				mono_error_set_error (error, MONO_ERROR_GENERIC, "%s", mono_error_get_message (compilation_error));
+			else
+				g_warning ("Could not prepare an updated breakpoint method: %s", mono_error_get_message (compilation_error));
+			mono_error_cleanup (compilation_error);
+			return;
+		}
+		seq_points = ji->seq_points;
+	}
 	insert_breakpoint (seq_points, ji, bp, error);
 }
 

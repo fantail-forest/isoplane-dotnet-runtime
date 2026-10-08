@@ -4778,6 +4778,8 @@ interp_method_compute_offsets (TransformData *td, InterpMethod *imethod, MonoMet
 		// Every local takes a MINT_STACK_SLOT_SIZE so IL locals have same behavior as execution locals
 		offset += size;
 	}
+	if (mono_metadata_update_enabled (NULL))
+		imethod->debug_persistent_size = offset;
 	offset = ALIGN_TO (offset, MINT_STACK_ALIGNMENT);
 
 	td->il_locals_size = offset - td->il_locals_offset;
