@@ -3194,6 +3194,7 @@ compute_frame_info (MonoInternalThread *thread, DebuggerTlsData *tls, gboolean f
 			StackFrame *top_frame = tls->frames [0];
 			if (interp_resume_frame == top_frame->interp_frame) {
 				int native_offset = (int) ((uintptr_t) interp_resume_ip - (uintptr_t) top_frame->de.ji->code_start);
+				top_frame->de.native_offset = native_offset;
 				top_frame->il_offset = calc_il_offset (top_frame->de.method, native_offset, TRUE);
 			}
 		}
@@ -10473,6 +10474,7 @@ thread_commands (int command, guint8 *p, guint8 *end, Buffer *buf)
 		if (tls->frames [0]->de.ji->is_interp) {
 			MonoJitTlsData *jit_data = thread->thread_info->jit_data;
 			mini_get_interp_callbacks_api ()->set_resume_state (jit_data, NULL, NULL, tls->frames [0]->interp_frame, (guint8*)tls->frames [0]->de.ji->code_start + sp.native_offset);
+			tls->frames [0]->de.native_offset = sp.native_offset;
 			tls->frames [0]->il_offset = sp.il_offset;
 		} else {
 			MONO_CONTEXT_SET_IP (&tls->restore_state.ctx, (guint8*)tls->frames [0]->de.ji->code_start + sp.native_offset);
