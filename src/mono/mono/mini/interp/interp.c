@@ -8716,7 +8716,7 @@ interp_frame_get_jit_info (MonoInterpFrameHandle frame)
 }
 
 static gboolean
-same_debug_frame_layout (InterpMethod *previous, InterpMethod *updated, MonoError *error)
+same_debug_frame_layout (InterpMethod *previous, InterpMethod *updated, gboolean allow_growth, MonoError *error)
 {
 	if (!previous->debug_il_code || !updated->debug_il_code) {
 		mono_error_set_not_supported (error, "The interpreter did not retain the frame metadata required for Hot Reload remapping.");
@@ -8726,7 +8726,7 @@ same_debug_frame_layout (InterpMethod *previous, InterpMethod *updated, MonoErro
 		mono_error_set_not_supported (error, "Remapping an updated frame requires interpreter optimizations to be disabled by the debugger.");
 		return FALSE;
 	}
-	if (previous->alloca_size != updated->alloca_size || previous->locals_size != updated->locals_size) {
+	if (!allow_growth && (previous->alloca_size != updated->alloca_size || previous->locals_size != updated->locals_size)) {
 		mono_error_set_not_supported (error, "Hot Reload changed frame storage from %d/%d to %d/%d bytes.",
 			previous->alloca_size, previous->locals_size, updated->alloca_size, updated->locals_size);
 		return FALSE;
@@ -8736,14 +8736,21 @@ same_debug_frame_layout (InterpMethod *previous, InterpMethod *updated, MonoErro
 		mono_error_set_not_supported (error, "Hot Reload changed the active method signature.");
 		return FALSE;
 	}
-	if (previous->debug_local_count != updated->debug_local_count) {
+	if (updated->debug_local_count < previous->debug_local_count || (!allow_growth && previous->debug_local_count != updated->debug_local_count)) {
 		mono_error_set_not_supported (error, "Hot Reload changed the local slot count from %u to %u.", previous->debug_local_count, updated->debug_local_count);
 		return FALSE;
 	}
-	if (previous->ref_slot_offset != updated->ref_slot_offset || (previous->ref_slots != updated->ref_slots
-		&& (!previous->ref_slots || !updated->ref_slots || !mono_bitset_equal (previous->ref_slots, updated->ref_slots)))) {
-		mono_error_set_not_supported (error, "Hot Reload changed the active frame's GC reference layout.");
+	if (previous->ref_slot_offset != updated->ref_slot_offset || updated->debug_persistent_size < previous->debug_persistent_size) {
+		mono_error_set_not_supported (error, "Hot Reload changed the active frame's retained storage layout.");
 		return FALSE;
+	}
+	for (guint offset = 0; offset < previous->debug_persistent_size; offset += sizeof (gpointer)) {
+		gboolean old_ref = previous->ref_slots && mono_bitset_test_fast (previous->ref_slots, offset / sizeof (gpointer));
+		gboolean new_ref = updated->ref_slots && mono_bitset_test_fast (updated->ref_slots, offset / sizeof (gpointer));
+		if (old_ref != new_ref) {
+			mono_error_set_not_supported (error, "Hot Reload changed the GC layout of existing arguments or locals.");
+			return FALSE;
+		}
 	}
 	for (guint i = 0; i < previous->param_count; ++i) {
 		if (!mono_metadata_type_equal (previous->param_types [i], updated->param_types [i])) {
@@ -8838,7 +8845,7 @@ debug_frame_method (InterpMethod *previous, MonoError *error)
 		return_val_if_nok (error, NULL);
 	}
 	if (previous != updated && same_debug_il (previous, updated)) {
-		if (!same_debug_frame_layout (previous, updated, error))
+		if (!same_debug_frame_layout (previous, updated, FALSE, error))
 			return NULL;
 		// A compiler delta may reproduce an unchanged body; retain its live handler continuations.
 		return previous;
@@ -8847,13 +8854,13 @@ debug_frame_method (InterpMethod *previous, MonoError *error)
 }
 
 static gpointer
-interp_frame_set_ip (MonoInterpFrameHandle handle, gint32 il_offset, MonoError *error)
+interp_frame_set_ip (MonoInterpFrameHandle handle, MonoJitTlsData *jit_tls, gint32 il_offset, MonoError *error)
 {
 	InterpFrame *frame = (InterpFrame*)handle;
 	InterpMethod *previous = frame->imethod;
 	InterpMethod *updated = debug_frame_method (previous, error);
 	return_val_if_nok (error, NULL);
-	if (previous->code != updated->code && !same_debug_frame_layout (previous, updated, error))
+	if (previous->code != updated->code && !same_debug_frame_layout (previous, updated, TRUE, error))
 		return NULL;
 	SeqPoint point;
 	if (il_offset < 0 || !updated->jinfo->seq_points
@@ -8865,6 +8872,20 @@ interp_frame_set_ip (MonoInterpFrameHandle handle, gint32 il_offset, MonoError *
 	guint16 *destination = (guint16*)((guint8*)updated->jinfo->code_start + point.native_offset);
 	if (previous->code != updated->code && !same_debug_exception_state (frame, updated, destination, error))
 		return NULL;
+	if (previous->code != updated->code) {
+		ThreadContext *context = (ThreadContext*)jit_tls->interp_context;
+		guchar *storage = (guchar*)frame->stack;
+		if (!context || storage < context->stack_start || storage >= context->stack_end
+			|| context->stack_pointer != storage + previous->alloca_size
+			|| updated->alloca_size >= (gsize)(context->stack_end - storage)) {
+			mono_error_set_not_supported (error, "The active interpreter frame cannot expand safely within its stack reservation.");
+			return NULL;
+		}
+		// Existing locals stay at their original addresses, including any outstanding managed byrefs.
+		guint size = MAX (previous->alloca_size, updated->alloca_size);
+		memset (storage + previous->debug_persistent_size, 0, size - previous->debug_persistent_size);
+		context->stack_pointer = storage + updated->alloca_size;
+	}
 	frame->imethod = updated;
 	frame->state.ip = destination + 1;
 	return destination;

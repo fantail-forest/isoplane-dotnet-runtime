@@ -38,7 +38,7 @@ stub_frame_get_ip (MonoInterpFrameHandle frame)
 }
 
 static gpointer
-stub_frame_set_ip (MonoInterpFrameHandle frame, gint32 il_offset, MonoError *error)
+stub_frame_set_ip (MonoInterpFrameHandle frame, MonoJitTlsData *jit_tls, gint32 il_offset, MonoError *error)
 {
 	mono_error_set_not_supported (error, "Moving an interpreter frame requires the interpreter component.");
 	return NULL;
