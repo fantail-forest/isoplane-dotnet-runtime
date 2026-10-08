@@ -8798,9 +8798,8 @@ same_debug_exception_state (InterpFrame *frame, InterpMethod *updated, const gui
 		return FALSE;
 	}
 	for (int i = 0; i < previous->num_clauses; ++i) {
-		if (previous->clauses [i].flags != updated->clauses [i].flags
-			|| previous->clause_data_offsets [i] != updated->clause_data_offsets [i]) {
-			mono_error_set_not_supported (error, "Hot Reload changed exception region %d's kind or storage offset.", i);
+		if (previous->clauses [i].flags != updated->clauses [i].flags) {
+			mono_error_set_not_supported (error, "Hot Reload changed exception region %d's kind.", i);
 			return FALSE;
 		}
 	}
@@ -8836,15 +8835,17 @@ same_debug_il (InterpMethod *previous, InterpMethod *updated)
 }
 
 static InterpMethod*
-debug_frame_method (InterpMethod *previous, MonoError *error)
+debug_frame_method (InterpFrame *frame, MonoError *error)
 {
+	InterpMethod *previous = frame->imethod;
 	InterpMethod *updated = mono_interp_get_imethod (previous->method);
 
 	if (!updated->transformed) {
 		mono_interp_transform_method (updated, get_context (), error);
 		return_val_if_nok (error, NULL);
 	}
-	if (previous != updated && same_debug_il (previous, updated)) {
+	if (previous != updated && same_debug_il (previous, updated)
+		&& ip_in_debug_handler (previous, (const guint16*)interp_frame_get_ip (frame))) {
 		if (!same_debug_frame_layout (previous, updated, FALSE, error))
 			return NULL;
 		// A compiler delta may reproduce an unchanged body; retain its live handler continuations.
@@ -8858,7 +8859,7 @@ interp_frame_set_ip (MonoInterpFrameHandle handle, MonoJitTlsData *jit_tls, gint
 {
 	InterpFrame *frame = (InterpFrame*)handle;
 	InterpMethod *previous = frame->imethod;
-	InterpMethod *updated = debug_frame_method (previous, error);
+	InterpMethod *updated = debug_frame_method (frame, error);
 	return_val_if_nok (error, NULL);
 	if (previous->code != updated->code && !same_debug_frame_layout (previous, updated, TRUE, error))
 		return NULL;
