@@ -134,6 +134,8 @@ struct InterpMethod {
 	void **data_items;
 	guint32 *local_offsets;
 	MonoType **debug_local_types;
+	const guchar *debug_il_code;
+	MonoExceptionClause *debug_il_clauses;
 	guint32 *arg_offsets;
 	guint32 *clause_data_offsets;
 	gpointer jit_call_info;
@@ -154,6 +156,8 @@ struct InterpMethod {
 	int transformed; // boolean
 	unsigned int param_count;
 	unsigned int debug_local_count;
+	guint32 debug_il_size;
+	guint32 debug_seq_points_size;
 	unsigned int hasthis; // boolean
 	MonoProfilerCallInstrumentationFlags prof_flags;
 	InterpMethodCodeType code_type;
