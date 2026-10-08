@@ -143,6 +143,8 @@ typedef struct {
 	 * generics/appdomains/method entry/exit.
 	 */
 	GPtrArray* children;
+	/* Frame stepping must not bind to a later Hot Reload body. */
+	MonoJitInfo *bound_body;
 } MonoBreakpoint;
 
 typedef int DbgEngineErrorCode;

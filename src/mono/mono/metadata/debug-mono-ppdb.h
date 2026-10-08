@@ -16,6 +16,7 @@
 #include <config.h>
 #include <mono/metadata/metadata-internals.h>
 #include <mono/metadata/mono-debug.h>
+#include <mono/metadata/debug-internals.h>
 
 typedef struct _MonoDebugInformationEnc		MonoDebugInformationEnc;
 
@@ -30,6 +31,7 @@ struct _MonoPPDBFile {
 struct _MonoDebugInformationEnc {
 	MonoPPDBFile *ppdb_file;
 	int idx;
+	guint32 method_version;
 };
 
 MonoPPDBFile*

@@ -15,6 +15,7 @@
 #include <mono/metadata/exception.h>
 #include <mono/metadata/exception-internals.h>
 #include <mono/metadata/metadata-update.h>
+#include <mono/metadata/debug-mono-ppdb.h>
 #include <mono/metadata/mono-endian.h>
 #include <mono/metadata/marshal.h>
 #include <mono/metadata/profiler-private.h>
@@ -4681,6 +4682,8 @@ interp_method_compute_offsets (TransformData *td, InterpMethod *imethod, MonoMet
 
 	imethod->local_offsets = (guint32*)imethod_alloc0 (td, num_il_locals * sizeof(guint32));
 	if (mono_metadata_update_enabled (NULL)) {
+		MonoDebugInformationEnc *debug_update = (MonoDebugInformationEnc*)mono_metadata_update_get_updated_method_ppdb (m_class_get_image (imethod->method->klass), mono_metadata_token_index (imethod->method->token));
+		imethod->debug_method_version = debug_update ? debug_update->method_version : 1;
 		imethod->debug_il_code = header->code;
 		imethod->debug_il_size = header->code_size;
 		imethod->debug_il_clauses = NULL;

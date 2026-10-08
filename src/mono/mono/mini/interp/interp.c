@@ -8880,6 +8880,15 @@ interp_frame_get_arg (MonoInterpFrameHandle frame, int pos)
 	return (char*)iframe->stack + get_arg_offset_fast (iframe->imethod, NULL, pos + iframe->imethod->hasthis);
 }
 
+static guint32
+interp_frame_get_method_version (MonoInterpFrameHandle frame, MonoError *error)
+{
+	guint32 version = ((InterpFrame*)frame)->imethod->debug_method_version;
+	if (!version)
+		mono_error_set_not_supported (error, "The interpreter frame has no retained method version.");
+	return version;
+}
+
 static MonoType*
 interp_frame_get_local_type (MonoInterpFrameHandle frame, int pos, MonoError *error)
 {

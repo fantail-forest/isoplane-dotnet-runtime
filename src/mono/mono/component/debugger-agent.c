@@ -2893,8 +2893,12 @@ no_seq_points_found (MonoMethod *method, int offset)
 }
 
 static int
-calc_il_offset (MonoMethod *method, int native_offset, gboolean is_top_frame)
+calc_il_offset (MonoMethod *method, MonoJitInfo *ji, int native_offset, gboolean is_top_frame)
 {
+	if (ji && ji->is_interp) {
+		SeqPoint sp;
+		return ji->seq_points && mono_seq_point_find_prev_by_native_offset (ji->seq_points, native_offset, &sp) ? sp.il_offset : -1;
+	}
 	int ret = -1;
 	if (is_top_frame) {
 		SeqPoint sp;
@@ -2952,7 +2956,7 @@ process_frame (StackFrameInfo *info, MonoContext *ctx, gpointer user_data)
 	}
 
 	if (info->il_offset == -1) {
-		info->il_offset = calc_il_offset (method, info->native_offset, ud->frames == NULL);
+		info->il_offset = calc_il_offset (method, info->ji, info->native_offset, ud->frames == NULL);
 	}
 
 	PRINT_DEBUG_MSG (1, "\tFrame: %s:[il=0x%x, native=0x%x] %d\n", mono_method_full_name (method, TRUE), info->il_offset, info->native_offset, info->managed);
@@ -3195,7 +3199,7 @@ compute_frame_info (MonoInternalThread *thread, DebuggerTlsData *tls, gboolean f
 			if (interp_resume_frame == top_frame->interp_frame) {
 				int native_offset = (int) ((uintptr_t) interp_resume_ip - (uintptr_t) top_frame->de.ji->code_start);
 				top_frame->de.native_offset = native_offset;
-				top_frame->il_offset = calc_il_offset (top_frame->de.method, native_offset, TRUE);
+				top_frame->il_offset = calc_il_offset (top_frame->de.method, top_frame->de.ji, native_offset, TRUE);
 			}
 		}
 	}
@@ -4714,7 +4718,7 @@ mono_ss_create_init_args (SingleStepReq *ss_req, SingleStepArgs *args)
 		 * Find the seq point corresponding to the landing site ip, which is the first seq
 		 * point after ip.
 		 */
-		found_sp = mono_find_next_seq_point_for_native_offset (frame.method, frame.native_offset, &info, &args->sp);
+		found_sp = mono_de_next_seq_point (frame.method, frame.ji, frame.native_offset, &info, &args->sp);
 		if (!found_sp)
 			no_seq_points_found (frame.method, frame.native_offset);
 		if (!found_sp) {
@@ -4764,7 +4768,7 @@ mono_ss_create_init_args (SingleStepReq *ss_req, SingleStepArgs *args)
 		if (frame) {
 			if (!method && frame->il_offset != -1) {
 				/* FIXME: Sort the table and use a binary search */
-				found_sp = mono_find_prev_seq_point_for_native_offset (frame->de.method, frame->de.native_offset, &info, &args->sp);
+				found_sp = mono_de_prev_seq_point (frame->de.method, frame->de.ji, frame->de.native_offset, &info, &args->sp);
 				if (!found_sp)
 					no_seq_points_found (frame->de.method, frame->de.native_offset);
 				if (!found_sp) {
@@ -10647,6 +10651,17 @@ frame_commands (int command, guint8 *p, guint8 *end, Buffer *buf)
 		return ERR_ABSENT_INFORMATION;
 
 	switch (command) {
+	case MDBGPROT_CMD_STACK_FRAME_GET_METHOD_VERSION: {
+		if (!frame->interp_frame || !frame->de.ji->is_interp)
+			return ERR_ABSENT_INFORMATION;
+		guint32 version = mini_get_interp_callbacks_api ()->frame_get_method_version (frame->interp_frame, error);
+		if (!is_ok (error)) {
+			mono_error_cleanup (error);
+			return ERR_ABSENT_INFORMATION;
+		}
+		buffer_add_int (buf, version);
+		break;
+	}
 	case MDBGPROT_CMD_STACK_FRAME_GET_ARGUMENTS: {
 		buffer_add_int(buf, sig->hasthis ? sig->param_count + 1 : sig->param_count);
 		if (sig->hasthis)

@@ -300,7 +300,7 @@ mono_de_add_pending_breakpoints (MonoMethod *method, MonoJitInfo *ji)
 		MonoBreakpoint *bp = (MonoBreakpoint *)g_ptr_array_index (breakpoints, i);
 		gboolean found = FALSE;
 
-		if (!bp_matches_method (bp, method))
+		if ((bp->bound_body && bp->bound_body != ji) || !bp_matches_method (bp, method))
 			continue;
 
 		for (guint j = 0; j < bp->children->len; ++j) {
@@ -386,23 +386,20 @@ collect_domain_bp (CollectDomainData *ud)
 }
 
 /*
- * mono_de_set_breakpoint:
+ * set_breakpoint:
  *
- *   Set a breakpoint at IL_OFFSET in METHOD.
+ * A non-NULL BODY pins temporary step breakpoints to that invocation's code.
+ * Set a breakpoint at IL_OFFSET in METHOD.
  * METHOD can be NULL, in which case a breakpoint is placed in all methods.
  * METHOD can also be a generic method definition, in which case a breakpoint
  * is placed in all instances of the method.
  * If ERROR is non-NULL, then it is set and NULL is returnd if some breakpoints couldn't be
  * inserted.
  */
-MonoBreakpoint*
-mono_de_set_breakpoint (MonoMethod *method, long il_offset, EventRequest *req, MonoError *error)
+static MonoBreakpoint*
+set_breakpoint (MonoMethod *method, long il_offset, EventRequest *req, MonoError *error, MonoJitInfo *body)
 {
 	MonoBreakpoint *bp;
-	MonoMethod *m;
-	MonoSeqPointInfo *seq_points;
-	GPtrArray *methods;
-	GPtrArray *method_seq_points;
 
 	if (error)
 		error_init (error);
@@ -415,46 +412,49 @@ mono_de_set_breakpoint (MonoMethod *method, long il_offset, EventRequest *req, M
 
 	bp = g_new0 (MonoBreakpoint, 1);
 	bp->method = method;
+	bp->bound_body = body;
 	bp->il_offset = il_offset;
 	bp->req = req;
 	bp->children = g_ptr_array_new ();
 
 	PRINT_DEBUG_MSG  (1, "[dbg] Setting %sbreakpoint at %s:0x%x.\n", (req->event_kind == EVENT_KIND_STEP) ? "single step " : "", method ? mono_method_full_name (method, TRUE) : "<all>", (int)il_offset);
 
-	methods = g_ptr_array_new ();
-	method_seq_points = g_ptr_array_new ();
-
 	mono_loader_lock ();
 
-	CollectDomainData user_data;
-	memset (&user_data, 0, sizeof (user_data));
-	user_data.bp = bp;
-	user_data.methods = methods;
-	user_data.method_seq_points = method_seq_points;
-	collect_domain_bp (&user_data);
+	if (body) {
+		insert_breakpoint (body->seq_points, body, bp, error);
+	} else {
+		GPtrArray *methods = g_ptr_array_new ();
+		GPtrArray *method_seq_points = g_ptr_array_new ();
+		CollectDomainData user_data;
+		memset (&user_data, 0, sizeof (user_data));
+		user_data.bp = bp;
+		user_data.methods = methods;
+		user_data.method_seq_points = method_seq_points;
+		collect_domain_bp (&user_data);
 
-	for (guint i = 0; i < methods->len; ++i) {
-		m = (MonoMethod *)g_ptr_array_index (methods, i);
-		seq_points = (MonoSeqPointInfo *)g_ptr_array_index (method_seq_points, i);
-		set_bp_in_method (m, seq_points, bp, error);
-	}
+		for (guint i = 0; i < methods->len; ++i) {
+			MonoMethod *m = (MonoMethod *)g_ptr_array_index (methods, i);
+			MonoSeqPointInfo *seq_points = (MonoSeqPointInfo *)g_ptr_array_index (method_seq_points, i);
+			set_bp_in_method (m, seq_points, bp, error);
+		}
 
-	// trying to get the seqpoints directly from the jit info of the method
-	// the seqpoints in get_default_jit_mm may not be found for AOTed methods in arm64
-	if (methods->len == 0)
-	{
-		MonoJitInfo *ji;
-		(void)mono_jit_search_all_backends_for_jit_info (method, &ji);
-		if (ji && ji->seq_points)
-			set_bp_in_method (method, ji->seq_points, bp, error);
+		// trying to get the seqpoints directly from the jit info of the method
+		// the seqpoints in get_default_jit_mm may not be found for AOTed methods in arm64
+		if (methods->len == 0)
+		{
+			MonoJitInfo *ji;
+			(void)mono_jit_search_all_backends_for_jit_info (method, &ji);
+			if (ji && ji->seq_points)
+				set_bp_in_method (method, ji->seq_points, bp, error);
+		}
+		g_ptr_array_free (methods, TRUE);
+		g_ptr_array_free (method_seq_points, TRUE);
 	}
 
 	g_ptr_array_add (breakpoints, bp);
 	mono_debugger_log_add_bp (bp, bp->method, bp->il_offset);
 	mono_loader_unlock ();
-
-	g_ptr_array_free (methods, TRUE);
-	g_ptr_array_free (method_seq_points, TRUE);
 
 	if (error && !is_ok (error)) {
 		mono_de_clear_breakpoint (bp);
@@ -462,6 +462,12 @@ mono_de_set_breakpoint (MonoMethod *method, long il_offset, EventRequest *req, M
 	}
 
 	return bp;
+}
+
+MonoBreakpoint*
+mono_de_set_breakpoint (MonoMethod *method, long il_offset, EventRequest *req, MonoError *error)
+{
+	return set_breakpoint (method, il_offset, req, error, NULL);
 }
 
 void
@@ -638,6 +644,26 @@ get_top_method_ji (gpointer ip, gpointer *out_ip)
 			*out_ip = mini_get_interp_callbacks_api ()->frame_get_ip (frame);
 	}
 	return ji;
+}
+
+gboolean
+mono_de_next_seq_point (MonoMethod *method, MonoJitInfo *ji, gint32 native_offset, MonoSeqPointInfo **info, SeqPoint *point)
+{
+	if (!ji || !ji->is_interp)
+		return mono_find_next_seq_point_for_native_offset (method, native_offset, info, point);
+	if (info)
+		*info = ji->seq_points;
+	return ji->seq_points && mono_seq_point_find_next_by_native_offset (ji->seq_points, native_offset, point);
+}
+
+gboolean
+mono_de_prev_seq_point (MonoMethod *method, MonoJitInfo *ji, gint32 native_offset, MonoSeqPointInfo **info, SeqPoint *point)
+{
+	if (!ji || !ji->is_interp)
+		return mono_find_prev_seq_point_for_native_offset (method, native_offset, info, point);
+	if (info)
+		*info = ji->seq_points;
+	return ji->seq_points && mono_seq_point_find_prev_by_native_offset (ji->seq_points, native_offset, point);
 }
 
 static void
@@ -826,7 +852,7 @@ mono_de_process_single_step (void *tls, gboolean from_signal)
 	 * The ip points to the instruction causing the single step event, which is before
 	 * the offset recorded in the seq point map, so find the next seq point after ip.
 	 */
-	if (!mono_find_next_seq_point_for_native_offset (method, GPTRDIFF_TO_INT32 ((guint8*)ip - (guint8*)ji->code_start), &info, &sp)) {
+	if (!mono_de_next_seq_point (method, ji, GPTRDIFF_TO_INT32 ((guint8*)ip - (guint8*)ji->code_start), &info, &sp)) {
 		g_assert_not_reached ();
 		goto exit;
 	}
@@ -1047,7 +1073,7 @@ mono_de_process_breakpoint (void *void_tls, gboolean from_signal)
 	 * The ip points to the instruction causing the breakpoint event, which is after
 	 * the offset recorded in the seq point map, so find the prev seq point before ip.
 	 */
-	found_sp = mono_find_prev_seq_point_for_native_offset (method, native_offset, &info, &sp);
+	found_sp = mono_de_prev_seq_point (method, ji, native_offset, &info, &sp);
 
 	if (!found_sp)
 		no_seq_points_found (method, native_offset);
@@ -1144,15 +1170,15 @@ mono_de_process_breakpoint (void *void_tls, gboolean from_signal)
  * Reject breakpoint if it is a duplicate of one already in list or hash table.
  */
 static gboolean
-ss_bp_is_unique (GSList *bps, GHashTable *ss_req_bp_cache, MonoMethod *method, guint32 il_offset)
+ss_bp_is_unique (GSList *bps, GHashTable *ss_req_bp_cache, MonoMethod *method, guint32 il_offset, MonoJitInfo *body)
 {
 	if (ss_req_bp_cache) {
-		MonoBreakpoint dummy = {method, (long)il_offset, NULL, NULL};
+		MonoBreakpoint dummy = {method, (long)il_offset, NULL, NULL, body};
 		return !g_hash_table_lookup (ss_req_bp_cache, &dummy);
 	}
 	for (GSList *l = bps; l; l = l->next) {
 		MonoBreakpoint *bp = (MonoBreakpoint *)l->data;
-		if (bp->method == method && bp->il_offset == il_offset)
+		if (bp->method == method && bp->il_offset == il_offset && bp->bound_body == body)
 			return FALSE;
 	}
 	return TRUE;
@@ -1161,26 +1187,26 @@ ss_bp_is_unique (GSList *bps, GHashTable *ss_req_bp_cache, MonoMethod *method, g
 /*
  * ss_bp_eq:
  *
- * GHashTable equality for a MonoBreakpoint (only care about method and il_offset fields)
+ * GHashTable equality for a MonoBreakpoint (method, body and IL offset)
  */
 static gint
 ss_bp_eq (gconstpointer ka, gconstpointer kb)
 {
 	const MonoBreakpoint *s1 = (const MonoBreakpoint *)ka;
 	const MonoBreakpoint *s2 = (const MonoBreakpoint *)kb;
-	return (s1->method == s2->method && s1->il_offset == s2->il_offset) ? 1 : 0;
+	return (s1->method == s2->method && s1->il_offset == s2->il_offset && s1->bound_body == s2->bound_body) ? 1 : 0;
 }
 
 /*
  * ss_bp_eq:
  *
- * GHashTable hash for a MonoBreakpoint (only care about method and il_offset fields)
+ * GHashTable hash for a MonoBreakpoint (method, body and IL offset)
  */
 static guint
 ss_bp_hash (gconstpointer data)
 {
 	const MonoBreakpoint *s = (const MonoBreakpoint *)data;
-	guint hash = (guint) (uintptr_t) s->method;
+	guint hash = (guint) (uintptr_t) s->method ^ (guint) (uintptr_t) s->bound_body;
 	hash ^= ((guint)s->il_offset) << 16; // Assume low bits are more interesting
 	hash ^= ((guint)s->il_offset) >> 16;
 	return hash;
@@ -1196,8 +1222,10 @@ ss_bp_hash (gconstpointer data)
  */
 static void
 ss_bp_add_one (SingleStepReq *ss_req, int *ss_req_bp_count, GHashTable **ss_req_bp_cache,
-	          MonoMethod *method, guint32 il_offset)
+	          MonoMethod *method, guint32 il_offset, MonoJitInfo *body)
 {
+	if (body && !body->is_interp)
+		body = NULL;
 	// This list is getting too long, switch to using the hash table
 	if (!*ss_req_bp_cache && *ss_req_bp_count > MAX_LINEAR_SCAN_BPS) {
 		*ss_req_bp_cache = g_hash_table_new (ss_bp_hash, ss_bp_eq);
@@ -1205,9 +1233,9 @@ ss_bp_add_one (SingleStepReq *ss_req, int *ss_req_bp_count, GHashTable **ss_req_
 			g_hash_table_insert (*ss_req_bp_cache, l->data, l->data);
 	}
 
-	if (ss_bp_is_unique (ss_req->bps, *ss_req_bp_cache, method, il_offset)) {
+	if (ss_bp_is_unique (ss_req->bps, *ss_req_bp_cache, method, il_offset, body)) {
 		// Create and add breakpoint
-		MonoBreakpoint *bp = mono_de_set_breakpoint (method, il_offset, ss_req->req, NULL);
+		MonoBreakpoint *bp = set_breakpoint (method, il_offset, ss_req->req, NULL, body);
 		ss_req->bps = g_slist_append (ss_req->bps, bp);
 		if (*ss_req_bp_cache)
 			g_hash_table_insert (*ss_req_bp_cache, bp, bp);
@@ -1256,6 +1284,7 @@ mono_de_ss_start (SingleStepReq *ss_req, SingleStepArgs *ss_args)
 	gboolean found_sp;
 	MonoSeqPointInfo *parent_info = NULL;
 	MonoMethod *parent_sp_method = NULL;
+	MonoJitInfo *method_body = NULL, *parent_body = NULL;
 	gboolean enable_global = FALSE;
 
 	// When 8 or more entries are in bps, we build a hash table to serve as a set of breakpoints.
@@ -1282,7 +1311,7 @@ mono_de_ss_start (SingleStepReq *ss_req, SingleStepArgs *ss_args)
 	 * Implement single stepping using breakpoints if possible.
 	 */
 	if (ss_args->step_to_catch) {
-		ss_bp_add_one (ss_req, &ss_req_bp_count, &ss_req_bp_cache, method, sp->il_offset);
+		ss_bp_add_one (ss_req, &ss_req_bp_count, &ss_req_bp_cache, method, sp->il_offset, NULL);
 	} else {
 		frame_index = 1;
 
@@ -1298,6 +1327,9 @@ mono_de_ss_start (SingleStepReq *ss_req, SingleStepArgs *ss_args)
 			rt_callbacks.ss_calculate_framecount (tls, ss_args->ctx, FALSE, &frames, &nframes);
 		}
 
+		if (nframes > 0)
+			method_body = frames [0]->ji;
+
 		MonoDebugMethodAsyncInfo* asyncMethod = mono_debug_lookup_method_async_debug_info (method);
 
 		/* Need to stop in catch clauses as well */
@@ -1312,8 +1344,8 @@ mono_de_ss_start (SingleStepReq *ss_req, SingleStepArgs *ss_args)
 						break;
 					MonoJitExceptionInfo *ei = &jinfo->clauses [j];
 
-					if (mono_find_next_seq_point_for_native_offset (frame->method, GPTRDIFF_TO_INT32 ((char*)ei->handler_start - (char*)jinfo->code_start), NULL, &local_sp))
-						ss_bp_add_one (ss_req, &ss_req_bp_count, &ss_req_bp_cache, frame->method, local_sp.il_offset);
+					if (mono_de_next_seq_point (frame->method, jinfo, GPTRDIFF_TO_INT32 ((char*)ei->handler_start - (char*)jinfo->code_start), NULL, &local_sp))
+						ss_bp_add_one (ss_req, &ss_req_bp_count, &ss_req_bp_cache, frame->method, local_sp.il_offset, jinfo);
 				}
 			}
 		}
@@ -1327,7 +1359,7 @@ mono_de_ss_start (SingleStepReq *ss_req, SingleStepArgs *ss_args)
 			for (int i = 0; i < asyncMethod->num_awaits; i++) {
 				if (sp->il_offset == asyncMethod->yield_offsets [i]) {
 					ss_req->async_id = mono_de_frame_async_id (frames [0]);
-					ss_bp_add_one (ss_req, &ss_req_bp_count, &ss_req_bp_cache, method, asyncMethod->resume_offsets [i]);
+					ss_bp_add_one (ss_req, &ss_req_bp_count, &ss_req_bp_cache, method, asyncMethod->resume_offsets [i], NULL);
 					g_hash_table_destroy (ss_req_bp_cache);
 					mono_debug_free_method_async_debug_info (asyncMethod);
 					if (locked)
@@ -1345,7 +1377,7 @@ mono_de_ss_start (SingleStepReq *ss_req, SingleStepArgs *ss_args)
 				if (set_set_notification_for_wait_completion_flag (frames [0])) {
 					ss_req->async_id = mono_de_frame_async_id (frames [0]);
 					ss_req->async_stepout_method = get_notify_debugger_of_wait_completion_method ();
-					ss_bp_add_one (ss_req, &ss_req_bp_count, &ss_req_bp_cache, ss_req->async_stepout_method, 0);
+					ss_bp_add_one (ss_req, &ss_req_bp_count, &ss_req_bp_cache, ss_req->async_stepout_method, 0, NULL);
 					g_hash_table_destroy (ss_req_bp_cache);
 					mono_debug_free_method_async_debug_info (asyncMethod);
 					if (locked)
@@ -1368,7 +1400,8 @@ mono_de_ss_start (SingleStepReq *ss_req, SingleStepArgs *ss_args)
 				DbgEngineStackFrame *frame = frames [frame_index];
 
 				method = frame->method;
-				found_sp = mono_find_prev_seq_point_for_native_offset (frame->method, frame->native_offset, &ss_args->info, &local_sp);
+				method_body = frame->ji;
+				found_sp = mono_de_prev_seq_point (frame->method, frame->ji, frame->native_offset, &ss_args->info, &local_sp);
 				sp = (found_sp)? &local_sp : NULL;
 				frame_index ++;
 				if (sp && sp->next_len != 0)
@@ -1383,7 +1416,8 @@ mono_de_ss_start (SingleStepReq *ss_req, SingleStepArgs *ss_args)
 					DbgEngineStackFrame *frame = frames [frame_index];
 
 					method = frame->method;
-					found_sp = mono_find_prev_seq_point_for_native_offset (frame->method, frame->native_offset, &ss_args->info, &local_sp);
+					method_body = frame->ji;
+					found_sp = mono_de_prev_seq_point (frame->method, frame->ji, frame->native_offset, &ss_args->info, &local_sp);
 					sp = (found_sp)? &local_sp : NULL;
 					if (sp && sp->next_len != 0)
 						break;
@@ -1396,7 +1430,8 @@ mono_de_ss_start (SingleStepReq *ss_req, SingleStepArgs *ss_args)
 					DbgEngineStackFrame *frame = frames [frame_index];
 
 					parent_sp_method = frame->method;
-					found_sp = mono_find_prev_seq_point_for_native_offset (frame->method, frame->native_offset, &parent_info, &local_parent_sp);
+					parent_body = frame->ji;
+					found_sp = mono_de_prev_seq_point (frame->method, frame->ji, frame->native_offset, &parent_info, &local_parent_sp);
 					parent_sp = found_sp ? &local_parent_sp : NULL;
 					if (found_sp && parent_sp->next_len != 0)
 						break;
@@ -1413,7 +1448,7 @@ mono_de_ss_start (SingleStepReq *ss_req, SingleStepArgs *ss_args)
 			for (int i = 0; i < sp->next_len; i++) {
 				next_sp = &next[i];
 
-				ss_bp_add_one (ss_req, &ss_req_bp_count, &ss_req_bp_cache, method, next_sp->il_offset);
+				ss_bp_add_one (ss_req, &ss_req_bp_count, &ss_req_bp_cache, method, next_sp->il_offset, method_body);
 			}
 			g_free (next);
 		}
@@ -1425,7 +1460,7 @@ mono_de_ss_start (SingleStepReq *ss_req, SingleStepArgs *ss_args)
 			for (int i = 0; i < parent_sp->next_len; i++) {
 				next_sp = &next[i];
 
-				ss_bp_add_one (ss_req, &ss_req_bp_count, &ss_req_bp_cache, parent_sp_method, next_sp->il_offset);
+				ss_bp_add_one (ss_req, &ss_req_bp_count, &ss_req_bp_cache, parent_sp_method, next_sp->il_offset, parent_body);
 			}
 			g_free (next);
 		}

@@ -12,6 +12,12 @@
 #include <mono/mini/interp/interp-internals.h>
 #include "debugger-protocol.h"
 
+gboolean
+mono_de_next_seq_point (MonoMethod *method, MonoJitInfo *ji, gint32 native_offset, MonoSeqPointInfo **info, SeqPoint *point);
+
+gboolean
+mono_de_prev_seq_point (MonoMethod *method, MonoJitInfo *ji, gint32 native_offset, MonoSeqPointInfo **info, SeqPoint *point);
+
 #define ModifierKind MdbgProtModifierKind
 #define StepDepth MdbgProtStepDepth
 #define StepSize MdbgProtStepSize

@@ -14,7 +14,7 @@
 #ifndef __MONO_EE_H__
 #define __MONO_EE_H__
 
-#define MONO_EE_API_VERSION 0x19
+#define MONO_EE_API_VERSION 0x1a
 
 typedef struct _MonoInterpStackIter MonoInterpStackIter;
 
@@ -50,6 +50,7 @@ typedef gpointer MonoInterpFrameHandle;
 	MONO_EE_CALLBACK (gpointer, frame_get_arg, (MonoInterpFrameHandle frame, int pos)) \
 	MONO_EE_CALLBACK (gpointer, frame_get_local, (MonoInterpFrameHandle frame, int pos)) \
 	MONO_EE_CALLBACK (MonoType*, frame_get_local_type, (MonoInterpFrameHandle frame, int pos, MonoError *error)) \
+	MONO_EE_CALLBACK (guint32, frame_get_method_version, (MonoInterpFrameHandle frame, MonoError *error)) \
 	MONO_EE_CALLBACK (gpointer, frame_get_this, (MonoInterpFrameHandle frame)) \
 	MONO_EE_CALLBACK (void, frame_arg_to_data, (MonoInterpFrameHandle frame, MonoMethodSignature *sig, int index, gpointer data)) \
 	MONO_EE_CALLBACK (void, data_to_frame_arg, (MonoInterpFrameHandle frame, MonoMethodSignature *sig, int index, gconstpointer data)) \
