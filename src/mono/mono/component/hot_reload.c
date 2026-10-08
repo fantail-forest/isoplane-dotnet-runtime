@@ -1521,8 +1521,9 @@ set_update_method (MonoImage *image_base, BaselineInfo *base_info, uint32_t gene
 }
 
 static MonoDebugInformationEnc *
-hot_reload_get_method_debug_information (MonoPPDBFile *ppdb_file, int idx)
+hot_reload_get_method_debug_information (DeltaInfo *delta_info, int idx)
 {
+	MonoPPDBFile *ppdb_file = delta_info->ppdb_file;
 	if (!ppdb_file)
 		return NULL;
 
@@ -1540,6 +1541,7 @@ hot_reload_get_method_debug_information (MonoPPDBFile *ppdb_file, int idx)
 				MonoDebugInformationEnc *encDebugInfo = g_new0 (MonoDebugInformationEnc, 1);
 				encDebugInfo->idx = i + 1;
 				encDebugInfo->ppdb_file = ppdb_file;
+				encDebugInfo->method_version = mono_metadata_decode_row_col (&delta_info->delta_image->tables [MONO_TABLE_MODULE], 0, MONO_MODULE_GENERATION) + 1;
 				return encDebugInfo;
 			}
 		}
@@ -2019,7 +2021,7 @@ apply_enclog_pass2 (Pass2Context *ctx, MonoImage *image_base, BaselineInfo *base
 					}
 
 					mono_trace (G_LOG_LEVEL_DEBUG, MONO_TRACE_METADATA_UPDATE, "Adding new method 0x%08x to class %s.%s", log_token, m_class_get_name_space (add_member_klass), m_class_get_name (add_member_klass));
-					MonoDebugInformationEnc *method_debug_information = hot_reload_get_method_debug_information (delta_info->ppdb_file, token_index);
+					MonoDebugInformationEnc *method_debug_information = hot_reload_get_method_debug_information (delta_info, token_index);
 					mono_trace (G_LOG_LEVEL_DEBUG, MONO_TRACE_METADATA_UPDATE, "Debug info for method 0x%08x has ppdb idx 0x%08x", log_token, method_debug_information ? method_debug_information->idx : 0);
 					add_method_to_baseline (base_info, delta_info, add_member_klass, log_token, method_debug_information);
 				}
@@ -2030,7 +2032,7 @@ apply_enclog_pass2 (Pass2Context *ctx, MonoImage *image_base, BaselineInfo *base
 			guint32 rva = mono_metadata_decode_row_col (&image_dmeta->tables [MONO_TABLE_METHOD], mapped_token - 1, MONO_METHOD_RVA);
 			if (rva < dil_length) {
 				char *il_address = ((char *) dil_data) + rva;
-				MonoDebugInformationEnc *method_debug_information = hot_reload_get_method_debug_information (delta_info->ppdb_file, token_index);
+				MonoDebugInformationEnc *method_debug_information = hot_reload_get_method_debug_information (delta_info, token_index);
 				set_update_method (image_base, base_info, generation, image_dmeta, delta_info, token_index, il_address, method_debug_information);
 			} else {
 				/* rva points probably into image_base IL stream. can this ever happen? */
