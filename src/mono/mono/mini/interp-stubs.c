@@ -51,6 +51,13 @@ stub_frame_get_arg (MonoInterpFrameHandle frame, int pos)
 	return NULL;
 }
 
+static guint32
+stub_frame_get_method_version (MonoInterpFrameHandle frame, MonoError *error)
+{
+	mono_error_set_not_supported (error, "Reading interpreter method versions requires the interpreter component.");
+	return 0;
+}
+
 static MonoType*
 stub_frame_get_local_type (MonoInterpFrameHandle frame, int pos, MonoError *error)
 {
