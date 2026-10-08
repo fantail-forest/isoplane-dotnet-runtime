@@ -1,6 +1,7 @@
 #include <config.h>
 
 #include "interp/interp.h"
+#include <mono/utils/mono-error-internals.h>
 
 /* interpreter callback stubs */
 
@@ -33,6 +34,13 @@ static gpointer
 stub_frame_get_ip (MonoInterpFrameHandle frame)
 {
 	g_assert_not_reached ();
+	return NULL;
+}
+
+static gpointer
+stub_frame_set_ip (MonoInterpFrameHandle frame, gint32 il_offset, MonoError *error)
+{
+	mono_error_set_not_supported (error, "Moving an interpreter frame requires the interpreter component.");
 	return NULL;
 }
 

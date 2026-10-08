@@ -62,6 +62,7 @@
 #include <mono/utils/atomic.h>
 
 #include "interp.h"
+#include "../seq-points.h"
 #include "interp-internals.h"
 #include "mintops.h"
 #include "interp-intrins.h"
@@ -8712,6 +8713,79 @@ interp_frame_get_jit_info (MonoInterpFrameHandle frame)
 
 	g_assert (iframe->imethod);
 	return iframe->imethod->jinfo;
+}
+
+static gboolean
+same_debug_frame_layout (InterpMethod *previous, InterpMethod *updated, MonoError *error)
+{
+	if (!mini_get_debug_options ()->mdb_optimizations || mono_interp_opt != 0) {
+		mono_error_set_not_supported (error, "Remapping an updated frame requires interpreter optimizations to be disabled by the debugger.");
+		return FALSE;
+	}
+	if (previous->num_clauses || updated->num_clauses) {
+		mono_error_set_not_supported (error, "Remapping an updated frame's exception handlers is not supported.");
+		return FALSE;
+	}
+	if (previous->alloca_size != updated->alloca_size || previous->locals_size != updated->locals_size) {
+		mono_error_set_not_supported (error, "Hot Reload changed frame storage from %d/%d to %d/%d bytes.",
+			previous->alloca_size, previous->locals_size, updated->alloca_size, updated->locals_size);
+		return FALSE;
+	}
+	if (previous->param_count != updated->param_count || previous->hasthis != updated->hasthis
+		|| !mono_metadata_type_equal (previous->rtype, updated->rtype)) {
+		mono_error_set_not_supported (error, "Hot Reload changed the active method signature.");
+		return FALSE;
+	}
+	if (previous->debug_local_count != updated->debug_local_count) {
+		mono_error_set_not_supported (error, "Hot Reload changed the local slot count from %u to %u.", previous->debug_local_count, updated->debug_local_count);
+		return FALSE;
+	}
+	if (previous->ref_slot_offset != updated->ref_slot_offset || (previous->ref_slots != updated->ref_slots
+		&& (!previous->ref_slots || !updated->ref_slots || !mono_bitset_equal (previous->ref_slots, updated->ref_slots)))) {
+		mono_error_set_not_supported (error, "Hot Reload changed the active frame's GC reference layout.");
+		return FALSE;
+	}
+	for (guint i = 0; i < previous->param_count; ++i) {
+		if (!mono_metadata_type_equal (previous->param_types [i], updated->param_types [i])) {
+			mono_error_set_not_supported (error, "Hot Reload changed parameter %u's type.", i);
+			return FALSE;
+		}
+	}
+	for (guint i = 0; i < previous->param_count + previous->hasthis; ++i) {
+		if (get_arg_offset_fast (previous, NULL, i) != get_arg_offset_fast (updated, NULL, i)) {
+			mono_error_set_not_supported (error, "Hot Reload changed argument %u's storage offset.", i);
+			return FALSE;
+		}
+	}
+	for (guint i = 0; i < previous->debug_local_count; ++i) {
+		if (previous->local_offsets [i] != updated->local_offsets [i]
+			|| !mono_metadata_type_equal (previous->debug_local_types [i], updated->debug_local_types [i])) {
+			mono_error_set_not_supported (error, "Hot Reload changed local slot %u's type or storage offset.", i);
+			return FALSE;
+		}
+	}
+	return TRUE;
+}
+
+static gpointer
+interp_frame_set_ip (MonoInterpFrameHandle handle, gint32 il_offset, MonoError *error)
+{
+	InterpFrame *frame = (InterpFrame*)handle;
+	InterpMethod *previous = frame->imethod;
+	InterpMethod *updated = mono_interp_get_imethod (previous->method);
+	if (!updated->transformed) {
+		mono_interp_transform_method (updated, get_context (), error);
+		return_val_if_nok (error, NULL);
+	}
+	if (previous->code != updated->code && !same_debug_frame_layout (previous, updated, error))
+		return NULL;
+	SeqPoint point;
+	if (!mono_find_seq_point (updated->method, il_offset, NULL, &point)) {
+		mono_error_set_argument (error, "il_offset", "The updated method has no sequence point at the requested offset.");
+		return NULL;
+	}
+	frame->imethod = updated;
+	return (guint8*)updated->jinfo->code_start + point.native_offset;
 }
 
 static gpointer

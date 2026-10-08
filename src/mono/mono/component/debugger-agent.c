@@ -10460,23 +10460,27 @@ thread_commands (int command, guint8 *p, guint8 *end, Buffer *buf)
 		if (tls->frame_count == 0 || tls->frames [0]->actual_method != method)
 			return ERR_INVALID_ARGUMENT;
 
-		found_sp = mono_find_seq_point (method, GINT64_TO_INT32 (il_offset), &seq_points, &sp);
-
-		g_assert (seq_points);
-
-		if (!found_sp)
-			return ERR_INVALID_ARGUMENT;
-
 		// FIXME: Check that the ip change is safe
 
-		PRINT_DEBUG_MSG (1, "[dbg] Setting IP to %s:0x%0x(0x%0x)\n", tls->frames [0]->actual_method->name, (int)sp.il_offset, (int)sp.native_offset);
+		PRINT_DEBUG_MSG (1, "[dbg] Setting IP to %s:0x%0x\n", tls->frames [0]->actual_method->name, (int)il_offset);
 
 		if (tls->frames [0]->de.ji->is_interp) {
 			MonoJitTlsData *jit_data = thread->thread_info->jit_data;
-			mini_get_interp_callbacks_api ()->set_resume_state (jit_data, NULL, NULL, tls->frames [0]->interp_frame, (guint8*)tls->frames [0]->de.ji->code_start + sp.native_offset);
-			tls->frames [0]->de.native_offset = sp.native_offset;
-			tls->frames [0]->il_offset = sp.il_offset;
+			ERROR_DECL (error);
+			gpointer destination = mini_get_interp_callbacks_api ()->frame_set_ip (tls->frames [0]->interp_frame, GINT64_TO_INT32 (il_offset), error);
+			if (!is_ok (error)) {
+				add_error_string (buf, mono_error_get_message (error));
+				mono_error_cleanup (error);
+				return ERR_INVALID_ARGUMENT;
+			}
+			tls->frames [0]->de.ji = mini_get_interp_callbacks_api ()->frame_get_jit_info (tls->frames [0]->interp_frame);
+			mini_get_interp_callbacks_api ()->set_resume_state (jit_data, NULL, NULL, tls->frames [0]->interp_frame, destination);
+			tls->frames [0]->de.native_offset = (guint8*)destination - (guint8*)tls->frames [0]->de.ji->code_start;
+			tls->frames [0]->il_offset = GINT64_TO_INT32 (il_offset);
 		} else {
+			found_sp = mono_find_seq_point (method, GINT64_TO_INT32 (il_offset), &seq_points, &sp);
+			if (!found_sp)
+				return ERR_INVALID_ARGUMENT;
 			MONO_CONTEXT_SET_IP (&tls->restore_state.ctx, (guint8*)tls->frames [0]->de.ji->code_start + sp.native_offset);
 		}
 		break;
