@@ -158,6 +158,7 @@ struct InterpMethod {
 	unsigned int debug_local_count;
 	guint32 debug_method_version;
 	guint32 debug_il_size;
+	guint32 debug_persistent_size;
 	guint32 debug_seq_points_size;
 	unsigned int hasthis; // boolean
 	MonoProfilerCallInstrumentationFlags prof_flags;
