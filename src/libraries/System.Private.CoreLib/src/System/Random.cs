@@ -2,6 +2,9 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 
 using System.Buffers;
+#if TARGET_WASI
+using System.Collections.Generic;
+#endif
 using System.Diagnostics;
 using System.Numerics;
 using System.Runtime.CompilerServices;
@@ -50,6 +53,53 @@ namespace System
             Debug.Assert(isThreadSafeRandom);
             _impl = null!; // base implementation isn't used at all
         }
+
+#if TARGET_WASI
+        // An Isoplane guest instance starts as a copy of a memory snapshot taken after the application
+        // initialized. A generator that seeded itself before the snapshot would produce the same sequence
+        // in every copy, so those generators are tracked until the instance activates and are reseeded then.
+        // Generators created after activation seed from the instance's own entropy and are never tracked.
+        // A generator given an explicit seed is deterministic by request and is left alone.
+        private static List<WeakReference<ImplBase>>? s_seededBeforeActivation = new();
+
+        private static void TrackUntilActivation(ImplBase generator)
+        {
+            List<WeakReference<ImplBase>>? tracked = s_seededBeforeActivation;
+            if (tracked is null)
+            {
+                return;
+            }
+
+            // Drop collected generators before the list grows, so that initialization code which
+            // creates many short-lived generators does not leave a reference to each in the snapshot.
+            if (tracked.Count == tracked.Capacity)
+            {
+                tracked.RemoveAll(static reference => !reference.TryGetTarget(out _));
+            }
+
+            tracked.Add(new WeakReference<ImplBase>(generator));
+        }
+
+        /// <summary>Reseeds the generators that seeded themselves before this instance activated.</summary>
+        /// <remarks>Called once per activation by the Isoplane SDK through UnsafeAccessor.</remarks>
+        internal static void ReseedAfterIsoplaneActivation()
+        {
+            List<WeakReference<ImplBase>>? tracked = s_seededBeforeActivation;
+            s_seededBeforeActivation = null;
+            if (tracked is null)
+            {
+                return;
+            }
+
+            foreach (WeakReference<ImplBase> reference in tracked)
+            {
+                if (reference.TryGetTarget(out ImplBase? generator))
+                {
+                    generator.Reseed();
+                }
+            }
+        }
+#endif
 
         /// <summary>Provides a thread-safe <see cref="Random"/> instance that may be used concurrently from any thread.</summary>
         public static Random Shared { get; } = new ThreadSafeRandom();
