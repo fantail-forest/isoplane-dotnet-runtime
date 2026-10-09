@@ -1718,7 +1718,11 @@ get_objref (MonoObject *obj)
 	if (obj == NULL)
 		return NULL;
 
+#ifdef HOST_WASI
+	if (wasi_suspend_count) {
+#else
 	if (suspend_count) {
+#endif
 		/*
 		 * Have to keep object refs created during suspensions alive for the duration of the suspension, so GCs during invokes don't collect them.
 		 */
@@ -1783,6 +1787,10 @@ true_pred (gpointer key, gpointer value, gpointer user_data)
 static void
 clear_suspended_objs (void)
 {
+#ifdef HOST_WASI
+	if (wasi_suspend_count > 0)
+		return;
+#endif
 	dbg_lock ();
 	mono_g_hash_table_foreach_remove (suspended_objs, true_pred, NULL);
 	dbg_unlock ();
@@ -6840,6 +6848,7 @@ dispose_vm (void)
 		resume_vm ();
 #ifdef HOST_WASI
 	wasi_suspend_count = 0;
+	clear_suspended_objs ();
 	mono_set_is_debugger_attached (FALSE);
 	free_managed_data_breakpoints (managed_data_breakpoints);
 	managed_data_breakpoints = NULL;
@@ -7201,6 +7210,11 @@ invoke_method (void)
 
 	tls->frames_up_to_date = FALSE;
 
+#ifdef HOST_WASI
+	/* Loader events during synchronous evaluation can capture temporary LMF frames. */
+	MonoThreadUnwindState paused_context = tls->context;
+#endif
+
 	id = invoke->id;
 
 	p = invoke->p;
@@ -7234,13 +7248,20 @@ invoke_method (void)
 
 	memcpy (&restore_ctx, &invoke->ctx, sizeof (MonoContext));
 
+#ifdef HOST_WASI
+	tls->context = paused_context;
+	tls->frames_up_to_date = FALSE;
+#endif
+
 	if (invoke->has_ctx)
 		save_thread_context (&restore_ctx);
 
+#ifndef HOST_WASI
 	if (invoke->flags & INVOKE_FLAG_SINGLE_THREADED) {
 		g_assert (tls->resume_count);
 		tls->resume_count -= invoke->suspend_count;
 	}
+#endif
 
 	PRINT_DEBUG_MSG (1, "[%p] Invoke finished (%d), resume_count = %d.\n", (gpointer) (gsize) mono_native_thread_id_get (), err, tls->resume_count);
 
