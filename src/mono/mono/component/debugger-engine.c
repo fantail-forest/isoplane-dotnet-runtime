@@ -797,8 +797,8 @@ mono_de_cancel_all_ss (void)
 	}
 }
 
-void
-mono_de_process_single_step (void *tls, gboolean from_signal)
+static void
+process_single_step (void *tls, gboolean from_signal, gboolean remapped)
 {
 	MonoJitInfo *ji;
 	guint8 *ip;
@@ -873,7 +873,8 @@ mono_de_process_single_step (void *tls, gboolean from_signal)
 
 	il_offset = sp.il_offset;
 
-	if (!mono_de_ss_update (ss_req, ji, &sp, tls, ctx, method))
+	gboolean hit = mono_de_ss_update (ss_req, ji, &sp, tls, ctx, method);
+	if (!hit && !remapped)
 		goto exit;
 
 	/* Start single stepping again from the current sequence point */
@@ -889,6 +890,9 @@ mono_de_process_single_step (void *tls, gboolean from_signal)
 	args.frames = NULL;
 	args.nframes = 0;
 	mono_de_ss_start (ss_req, &args);
+	if (!hit)
+		goto exit;
+
 
 	if ((ss_req->filter & STEP_FILTER_STATIC_CTOR) &&
 		(method->flags & METHOD_ATTRIBUTE_SPECIAL_NAME) &&
@@ -914,6 +918,19 @@ mono_de_process_single_step (void *tls, gboolean from_signal)
 
  exit:
 	mono_de_ss_req_release (ss_req);
+}
+
+void
+mono_de_process_single_step (void *tls, gboolean from_signal)
+{
+	process_single_step (tls, from_signal, FALSE);
+}
+
+void
+mono_de_process_frame_remap (void *tls)
+{
+	rt_callbacks.ss_discard_frame_context (tls);
+	process_single_step (tls, FALSE, TRUE);
 }
 
 /*

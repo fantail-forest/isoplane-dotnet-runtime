@@ -117,6 +117,23 @@ typedef enum {
 /*
  * Structure representing a method transformed for the interpreter
  */
+typedef struct {
+	MonoClass *klass;
+	guint32 offset;
+	guint32 size;
+	guint8 type;
+	gboolean managed_pointer;
+} InterpDebugStackValue;
+
+typedef struct InterpDebugReturnPoint InterpDebugReturnPoint;
+struct InterpDebugReturnPoint {
+	InterpDebugReturnPoint *next;
+	gint32 il_offset;
+	guint32 native_offset;
+	guint32 count;
+	InterpDebugStackValue values [MONO_ZERO_LEN_ARRAY];
+};
+
 typedef struct InterpMethod InterpMethod;
 struct InterpMethod {
 	/* NOTE: These first two elements (method and
@@ -136,6 +153,7 @@ struct InterpMethod {
 	MonoType **debug_local_types;
 	const guchar *debug_il_code;
 	MonoExceptionClause *debug_il_clauses;
+	InterpDebugReturnPoint *debug_return_points;
 	guint32 *arg_offsets;
 	guint32 *clause_data_offsets;
 	gpointer jit_call_info;
@@ -252,6 +270,9 @@ struct InterpFrame {
 	/* This is valid if state.ip != NULL */
 	InterpState state;
 	gboolean debugger_break_completed;
+	InterpMethod *remap_method;
+	InterpDebugReturnPoint *remap_source;
+	InterpDebugReturnPoint *remap_destination;
 };
 
 #define frame_locals(frame) ((guchar*)(frame)->stack)

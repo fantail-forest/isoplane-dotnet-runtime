@@ -4672,6 +4672,28 @@ mono_interp_type_size (MonoType *type, int mt, int *align_p)
 	return size;
 }
 
+static InterpDebugReturnPoint*
+capture_debug_return_point (TransformData *td, int il_offset)
+{
+	if (!mono_metadata_update_enabled (NULL) || !mini_get_debug_options ()->mdb_optimizations || mono_interp_opt != 0)
+		return NULL;
+	guint32 count = GPTRDIFF_TO_UINT32 (td->sp - td->stack);
+	InterpDebugReturnPoint *point = (InterpDebugReturnPoint*)imethod_alloc0 (td,
+		sizeof (InterpDebugReturnPoint) + count * sizeof (InterpDebugStackValue));
+	point->count = count;
+	point->il_offset = il_offset;
+	for (guint32 i = 0; i < count; ++i) {
+		StackInfo *value = &td->stack [i];
+		point->values [i].klass = value->klass;
+		point->values [i].type = value->type;
+		point->values [i].managed_pointer = value->type == STACK_TYPE_MP;
+		// Resolve the variable index after the interpreter has allocated frame storage.
+		point->values [i].offset = value->var;
+		point->values [i].size = value->size;
+	}
+	return point;
+}
+
 static void
 interp_method_compute_offsets (TransformData *td, InterpMethod *imethod, MonoMethodSignature *sig, MonoMethodHeader *header, MonoError *error)
 {
@@ -4683,6 +4705,7 @@ interp_method_compute_offsets (TransformData *td, InterpMethod *imethod, MonoMet
 	// 64 vars * 72 bytes = 4608 bytes. Many methods need less than this
 	int target_vars_capacity = num_locals + 64;
 
+	imethod->debug_return_points = NULL;
 	imethod->local_offsets = (guint32*)imethod_alloc0 (td, num_il_locals * sizeof(guint32));
 	if (mono_metadata_update_enabled (NULL)) {
 		MonoDebugInformationEnc *debug_update = (MonoDebugInformationEnc*)mono_metadata_update_get_updated_method_ppdb (m_class_get_image (imethod->method->klass), mono_metadata_token_index (imethod->method->token));
@@ -5717,6 +5740,10 @@ retry_emit:
 				if (in_offset == 0 || (header->num_clauses && !td->cbb->last_ins))
 					interp_add_ins (td, MINT_SDB_INTR_LOC);
 				last_seq_point = interp_add_ins (td, MINT_SDB_SEQ_POINT);
+				if (td->pending_debug_return_point && td->pending_debug_return_point->il_offset == in_offset) {
+					last_seq_point->info.debug_return_point = td->pending_debug_return_point;
+					td->pending_debug_return_point = NULL;
+				}
 			} else {
 				last_seq_point = interp_add_ins (td, MINT_IL_SEQ_POINT);
 			}
@@ -6019,7 +6046,11 @@ retry_emit:
 				// This seq point is actually associated with the instruction following the call
 				last_seq_point->il_offset = GPTRDIFF_TO_INT (td->ip - header->code);
 				last_seq_point->flags = INTERP_INST_FLAG_SEQ_POINT_NONEMPTY_STACK;
+				last_seq_point->info.debug_return_point = capture_debug_return_point (td, last_seq_point->il_offset);
 			}
+
+			if (sym_seq_points && !need_seq_point)
+				td->pending_debug_return_point = capture_debug_return_point (td, GPTRDIFF_TO_INT (td->ip - header->code));
 
 			if (td->last_ins->opcode == MINT_TAILCALL || td->last_ins->opcode == MINT_TAILCALL_VIRT) {
 				// Execution does not follow through
@@ -9383,6 +9414,14 @@ emit_compacted_instruction (TransformData *td, guint16* start_ip, InterpInst *in
 			cbb = td->offset_to_bb [ins->il_offset];
 		}
 		seqp->native_offset = GPTRDIFF_TO_INT ((guint8*)start_ip - (guint8*)td->new_code);
+		if (ins->info.debug_return_point) {
+			InterpDebugReturnPoint *point = ins->info.debug_return_point;
+			point->native_offset = seqp->native_offset;
+			point->next = td->rtm->debug_return_points;
+			td->rtm->debug_return_points = point;
+			for (guint32 i = 0; i < point->count; ++i)
+				point->values [i].offset = get_var_offset (td, point->values [i].offset);
+		}
 		if (ins->flags & INTERP_INST_FLAG_SEQ_POINT_NONEMPTY_STACK)
 			seqp->flags |= MONO_SEQ_POINT_FLAG_NONEMPTY_STACK;
 		if (ins->flags & INTERP_INST_FLAG_SEQ_POINT_NESTED_CALL)

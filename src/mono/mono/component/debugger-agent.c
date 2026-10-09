@@ -3061,6 +3061,32 @@ process_filter_frame (StackFrameInfo *info, MonoContext *ctx, gpointer user_data
 	return process_frame (info, ctx, user_data);
 }
 
+static void
+assign_frame_ids (DebuggerTlsData *tls, StackFrame **frames, int count)
+{
+	for (int index = 0; index < count; ++index) {
+		StackFrame *f = frames [index];
+#ifndef TARGET_WASM
+		int i;
+		/*
+		 * Reuse the id for already existing stack frames, so invokes don't invalidate
+		 * the still valid stack frames.
+		 */
+		for (i = 0; i < tls->frame_count; ++i) {
+			if (tls->frames [i]->frame_addr == f->frame_addr) {
+				f->id = tls->frames [i]->id;
+				break;
+			}
+		}
+
+		if (i >= tls->frame_count)
+			f->id = mono_atomic_inc_i32 (&frame_id);
+#else
+		f->id = index + 1;
+#endif
+	}
+}
+
 /*
  * Return a malloc-ed list of StackFrame structures.
  */
@@ -3108,6 +3134,7 @@ compute_frame_info (MonoInternalThread *thread, DebuggerTlsData *tls, gboolean f
 	if (CHECK_PROTOCOL_VERSION (2, 52)) {
 		if (tls->restore_state.valid && MONO_CONTEXT_GET_IP (&tls->context.ctx) != MONO_CONTEXT_GET_IP (&tls->restore_state.ctx)) {
 			new_frames = compute_frame_info_from (thread, tls, &tls->restore_state, &new_frame_count);
+			assign_frame_ids (tls, new_frames, new_frame_count);
 			invalidate_frames (tls);
 
 			tls->frames = new_frames;
@@ -3159,28 +3186,12 @@ compute_frame_info (MonoInternalThread *thread, DebuggerTlsData *tls, gboolean f
 	for (tmp = user_data.frames; tmp; tmp = tmp->next) {
 		f = (StackFrame *)tmp->data;
 
-#ifndef TARGET_WASM
-		int i;
-		/*
-		 * Reuse the id for already existing stack frames, so invokes don't invalidate
-		 * the still valid stack frames.
-		 */
-		for (i = 0; i < tls->frame_count; ++i) {
-			if (tls->frames [i]->frame_addr == f->frame_addr) {
-				f->id = tls->frames [i]->id;
-				break;
-			}
-		}
 
-		if (i >= tls->frame_count)
-			f->id = mono_atomic_inc_i32 (&frame_id);
-#else //keep the same behavior that we have for wasm before start using debugger-agent
-		f->id = findex+1;
-#endif
 		new_frames [findex ++] = f;
 	}
 
 	g_slist_free (user_data.frames);
+	assign_frame_ids (tls, new_frames, new_frame_count);
 
 	invalidate_frames (tls);
 
@@ -4569,7 +4580,7 @@ debugger_agent_single_step_event (void *sigctx)
 }
 
 static void
-debugger_agent_single_step_from_context (MonoContext *ctx)
+debugger_agent_process_step_context (MonoContext *ctx, gboolean remapped)
 {
 	DebuggerTlsData *tls;
 	MonoThreadUnwindState orig_restore_state;
@@ -4596,11 +4607,33 @@ debugger_agent_single_step_from_context (MonoContext *ctx)
 	 * in GC Safe mode.
 	 */
 	MONO_ENTER_GC_UNSAFE;
-	mono_de_process_single_step (tls, FALSE);
+	if (remapped)
+		mono_de_process_frame_remap (tls);
+	else
+		mono_de_process_single_step (tls, FALSE);
 	MONO_EXIT_GC_UNSAFE;
 
 	memcpy (ctx, &tls->restore_state.ctx, sizeof (MonoContext));
 	memcpy (&tls->restore_state, &orig_restore_state, sizeof (MonoThreadUnwindState));
+}
+
+static void
+debugger_agent_single_step_from_context (MonoContext *ctx)
+{
+	debugger_agent_process_step_context (ctx, FALSE);
+}
+
+static void
+debugger_agent_frame_remapped (void)
+{
+	MonoContext ctx;
+	UserBreakCbData data;
+	memset (&data, 0, sizeof (data));
+	data.ctx = &ctx;
+	MONO_CONTEXT_SET_IP (&ctx, NULL);
+	mono_walk_stack_with_ctx (user_break_cb, NULL, (MonoUnwindOptions)0, &data);
+	g_assert (data.found);
+	debugger_agent_process_step_context (&ctx, TRUE);
 }
 
 static void
@@ -10635,6 +10668,24 @@ frame_commands (int command, guint8 *p, guint8 *end, Buffer *buf)
 		return ERR_NONE;
 	}
 
+	if (command == MDBGPROT_CMD_STACK_FRAME_RETURN_OFFSET || command == MDBGPROT_CMD_STACK_FRAME_DEFER_REMAP) {
+		gboolean caller = frame_idx > 0 && frame->interp_frame && frame->de.ji && frame->de.ji->is_interp;
+		if (command == MDBGPROT_CMD_STACK_FRAME_RETURN_OFFSET) {
+			buffer_add_int (buf, caller ? mini_get_interp_callbacks_api ()->frame_return_offset (frame->interp_frame) : -1);
+			return ERR_NONE;
+		}
+		gint32 offset = decode_int (p, &p, end);
+		if (!caller)
+			return ERR_INVALID_ARGUMENT;
+		mini_get_interp_callbacks_api ()->frame_defer_remap (frame->interp_frame, thread->thread_info->jit_data, offset, error);
+		if (!is_ok (error)) {
+			add_error_string (buf, mono_error_get_message (error));
+			mono_error_cleanup (error);
+			return ERR_INVALID_ARGUMENT;
+		}
+		return ERR_NONE;
+	}
+
 	if (command == MDBGPROT_CMD_STACK_FRAME_CAN_REMAP) {
 		gboolean can_remap = frame_idx == 0 && frame->interp_frame && frame->de.ji && frame->de.ji->is_interp
 			&& mini_get_interp_callbacks_api ()->frame_can_remap (frame->interp_frame, error);
@@ -11851,6 +11902,7 @@ debugger_agent_add_function_pointers(MonoComponentDebugger* fn_table)
 	fn_table->breakpoint_hit = debugger_agent_breakpoint_hit;
 	fn_table->single_step_event = debugger_agent_single_step_event;
 	fn_table->single_step_from_context = debugger_agent_single_step_from_context;
+	fn_table->frame_remapped = debugger_agent_frame_remapped;
 	fn_table->breakpoint_from_context = debugger_agent_breakpoint_from_context;
 	fn_table->free_mem_manager = debugger_agent_free_mem_manager;
 	fn_table->unhandled_exception = debugger_agent_unhandled_exception;
