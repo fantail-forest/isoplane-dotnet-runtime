@@ -4092,6 +4092,18 @@ remap_debug_value (MonoType *type, guchar *value, guchar *storage, InterpDebugRe
 	}
 }
 
+static void
+reset_debug_temporaries (guchar *storage, InterpMethod *previous, InterpMethod *updated)
+{
+	MonoObject *delegate = previous->ref_slot_offset >= 0
+		? *(MonoObject**)(storage + previous->ref_slot_offset) : NULL;
+	memset (storage + previous->debug_persistent_size, 0,
+		MAX (previous->alloca_size, updated->alloca_size) - previous->debug_persistent_size);
+	// The interpreter's delegate root is a temporary whose offset follows the IL locals.
+	if (updated->ref_slot_offset >= 0)
+		*(MonoObject**)(storage + updated->ref_slot_offset) = delegate;
+}
+
 static gboolean
 apply_deferred_debug_remap (InterpFrame *frame, ThreadContext *context, const guint16 **ip)
 {
@@ -4123,8 +4135,7 @@ apply_deferred_debug_remap (InterpFrame *frame, ThreadContext *context, const gu
 	}
 	for (guint32 i = 0; i < previous->debug_local_count; ++i)
 		remap_debug_value (previous->debug_local_types [i], storage + previous->local_offsets [i], storage, source, destination);
-	memset (storage + previous->debug_persistent_size, 0,
-		MAX (previous->alloca_size, updated->alloca_size) - previous->debug_persistent_size);
+	reset_debug_temporaries (storage, previous, updated);
 	position = 0;
 	for (guint32 i = 0; i < destination->count; ++i) {
 		memcpy (storage + destination->values [i].offset, saved + position, destination->values [i].size);
@@ -8851,8 +8862,9 @@ same_debug_frame_layout (InterpMethod *previous, InterpMethod *updated, gboolean
 		mono_error_set_not_supported (error, "Hot Reload changed the local slot count from %u to %u.", previous->debug_local_count, updated->debug_local_count);
 		return FALSE;
 	}
-	if (previous->ref_slot_offset != updated->ref_slot_offset || updated->debug_persistent_size < previous->debug_persistent_size) {
-		mono_error_set_not_supported (error, "Hot Reload changed the active frame's retained storage layout.");
+	if (updated->debug_persistent_size < previous->debug_persistent_size) {
+		mono_error_set_not_supported (error, "Hot Reload reduced retained frame storage from %u to %u bytes.",
+			previous->debug_persistent_size, updated->debug_persistent_size);
 		return FALSE;
 	}
 	for (guint offset = 0; offset < previous->debug_persistent_size; offset += sizeof (gpointer)) {
@@ -9038,8 +9050,7 @@ interp_frame_set_ip (MonoInterpFrameHandle handle, MonoJitTlsData *jit_tls, gint
 			return NULL;
 		}
 		// Existing locals stay at their original addresses, including any outstanding managed byrefs.
-		guint size = MAX (previous->alloca_size, updated->alloca_size);
-		memset (storage + previous->debug_persistent_size, 0, size - previous->debug_persistent_size);
+		reset_debug_temporaries (storage, previous, updated);
 		context->stack_pointer = storage + updated->alloca_size;
 	}
 	frame->imethod = updated;
