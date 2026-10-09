@@ -119,11 +119,29 @@ namespace System
             /// <remarks>Used to ensure that any calls to other virtual members are performed using the Random-derived instance, if one exists.</remarks>
             private readonly Random _parent;
             /// <summary>Seed specified at construction time used to lazily initialize <see cref="_prng"/>.</summary>
+#if TARGET_WASI
+            private int _seed;
+#else
             private readonly int _seed;
+#endif
             /// <summary>Lazily-initialized algorithm backing this instance.</summary>
             private CompatPrng _prng; // mutable struct; do not make this readonly
 
+#if TARGET_WASI
+            public CompatDerivedImpl(Random parent) : this(parent, Shared.Next()) => TrackUntilActivation(this);
+
+            // Only an instance that chose its own seed is tracked. The new seed comes from the host and not
+            // from Shared, which may itself still be waiting for its turn to be reseeded.
+            internal override unsafe void Reseed()
+            {
+                int seed;
+                Interop.GetRandomBytes((byte*)&seed, sizeof(int));
+                _seed = seed & int.MaxValue;
+                _prng = default;
+            }
+#else
             public CompatDerivedImpl(Random parent) : this(parent, Shared.Next()) { }
+#endif
 
             public CompatDerivedImpl(Random parent, int seed)
             {
