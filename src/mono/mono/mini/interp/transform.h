@@ -87,6 +87,7 @@ struct _InterpInst {
 		InterpBasicBlock *target_bb;
 		InterpBasicBlock **target_bb_table;
 		InterpCallInfo *call_info;
+		InterpDebugReturnPoint *debug_return_point;
 		int *args; // for variable number of args, used only for phi
 		MonoBitSet *dead_phi_vars; // only for MINT_DEAD_PHI
 	} info;
@@ -326,6 +327,7 @@ typedef struct
 	gboolean gen_seq_points;
 	gboolean gen_sdb_seq_points;
 	GPtrArray *seq_points;
+	InterpDebugReturnPoint *pending_debug_return_point;
 	InterpBasicBlock **offset_to_bb;
 	InterpBasicBlock *entry_bb, *cbb;
 	InterpBasicBlock **bblocks; // ordering of bblocks in reverse postorder dfs

@@ -51,6 +51,18 @@ stub_frame_can_remap (MonoInterpFrameHandle frame, MonoError *error)
 	return FALSE;
 }
 
+static gint32
+stub_frame_return_offset (MonoInterpFrameHandle frame)
+{
+	return -1;
+}
+
+static void
+stub_frame_defer_remap (MonoInterpFrameHandle frame, MonoJitTlsData *jit_tls, gint32 il_offset, MonoError *error)
+{
+	mono_error_set_not_supported (error, "Deferred remapping requires the interpreter component.");
+}
+
 static gpointer
 stub_frame_get_arg (MonoInterpFrameHandle frame, int pos)
 {

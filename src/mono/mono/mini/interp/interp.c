@@ -259,6 +259,8 @@ reinit_frame (InterpFrame *frame, InterpFrame *parent, InterpMethod *imethod, gp
 	frame->retval = (stackval*)retval;
 	frame->state.ip = NULL;
 	frame->debugger_break_completed = FALSE;
+	frame->remap_method = NULL;
+	frame->remap_source = frame->remap_destination = NULL;
 }
 
 #define STACK_ADD_ALIGNED_BYTES(sp,bytes) ((stackval*)((char*)(sp) + (bytes)))
@@ -4052,6 +4054,93 @@ mono_interp_profiler_raise_tail_call (InterpFrame *frame, MonoMethod *new_method
 		mono_interp_profiler_raise (frame, mono_profiler_raise_method_samplepoint); \
 	}
 
+static gpointer
+remap_debug_pointer (gpointer value, guchar *storage, InterpDebugReturnPoint *source, InterpDebugReturnPoint *destination)
+{
+	for (guint32 i = 0; i < source->count; ++i) {
+		gsize address = (gsize)value;
+		gsize start = (gsize)(storage + source->values [i].offset);
+		if (address >= start && address < start + source->values [i].size)
+			return storage + destination->values [i].offset + (address - start);
+	}
+	return value;
+}
+
+static void
+remap_debug_value (MonoType *type, guchar *value, guchar *storage, InterpDebugReturnPoint *source, InterpDebugReturnPoint *destination)
+{
+	if (m_type_is_byref (type)) {
+		gpointer pointer;
+		memcpy (&pointer, value, sizeof (pointer));
+		pointer = remap_debug_pointer (pointer, storage, source, destination);
+		memcpy (value, &pointer, sizeof (pointer));
+	} else if (type->type == MONO_TYPE_TYPEDBYREF) {
+		MonoTypedRef *reference = (MonoTypedRef*)value;
+		reference->value = remap_debug_pointer (reference->value, storage, source, destination);
+	} else if (MONO_TYPE_ISSTRUCT (type)) {
+		MonoClass *klass = mono_class_from_mono_type_internal (type);
+		if (!m_class_is_byreflike (klass))
+			return;
+		gpointer iterator = NULL;
+		MonoClassField *field;
+		while ((field = mono_class_get_fields_internal (klass, &iterator))) {
+			if (mono_field_get_flags (field) & FIELD_ATTRIBUTE_STATIC)
+				continue;
+			remap_debug_value (mono_field_get_type_internal (field),
+				value + mono_field_get_offset (field) - MONO_ABI_SIZEOF (MonoObject), storage, source, destination);
+		}
+	}
+}
+
+static gboolean
+apply_deferred_debug_remap (InterpFrame *frame, ThreadContext *context, const guint16 **ip)
+{
+	InterpMethod *updated = frame->remap_method;
+	if (!updated)
+		return FALSE;
+	InterpMethod *previous = frame->imethod;
+	InterpDebugReturnPoint *source = frame->remap_source;
+	if ((guint8*)*ip != (guint8*)previous->code + source->native_offset)
+		return FALSE;
+	InterpDebugReturnPoint *destination = frame->remap_destination;
+	guchar *storage = (guchar*)frame->stack;
+	guint32 bytes = 0;
+	for (guint32 i = 0; i < source->count; ++i)
+		bytes += source->values [i].size;
+	guchar *saved = (guchar*)g_malloc (MAX (bytes, 1));
+	guint32 position = 0;
+	for (guint32 i = 0; i < source->count; ++i) {
+		memcpy (saved + position, storage + source->values [i].offset, source->values [i].size);
+		if (source->values [i].managed_pointer) {
+			gpointer value;
+			memcpy (&value, saved + position, sizeof (value));
+			value = remap_debug_pointer (value, storage, source, destination);
+			memcpy (saved + position, &value, sizeof (value));
+		} else if (source->values [i].klass && m_class_is_byreflike (source->values [i].klass)) {
+			remap_debug_value (m_class_get_byval_arg (source->values [i].klass), saved + position, storage, source, destination);
+		}
+		position += source->values [i].size;
+	}
+	for (guint32 i = 0; i < previous->debug_local_count; ++i)
+		remap_debug_value (previous->debug_local_types [i], storage + previous->local_offsets [i], storage, source, destination);
+	memset (storage + previous->debug_persistent_size, 0,
+		MAX (previous->alloca_size, updated->alloca_size) - previous->debug_persistent_size);
+	position = 0;
+	for (guint32 i = 0; i < destination->count; ++i) {
+		memcpy (storage + destination->values [i].offset, saved + position, destination->values [i].size);
+		position += destination->values [i].size;
+	}
+	g_free (saved);
+	frame->imethod = updated;
+	context->stack_pointer = storage + updated->alloca_size;
+	*ip = (guint16*)((guint8*)updated->code + destination->native_offset);
+	frame->state.ip = *ip + 1;
+	frame->remap_method = NULL;
+	frame->remap_source = frame->remap_destination = NULL;
+	do_debugger_tramp (mono_component_debugger ()->frame_remapped, frame);
+	return TRUE;
+}
+
 /*
  * If CLAUSE_ARGS is non-null, start executing from it.
  * The ERROR argument is used to avoid declaring an error object for every interp frame, its not used
@@ -7537,6 +7626,14 @@ MINT_IN_CASE(MINT_BRTRUE_I8_SP) ZEROP_SP(gint64, !=); MINT_IN_BREAK;
 			ip++;
 			MINT_IN_BREAK;
 		MINT_IN_CASE(MINT_SDB_INTR_LOC)
+			if (frame->remap_method) {
+				const guint16 *continuation = ip + 1;
+				if (apply_deferred_debug_remap (frame, context, &continuation)) {
+					ip = continuation;
+					CHECK_RESUME_STATE (context);
+					goto main_loop;
+				}
+			}
 			if (G_UNLIKELY (ss_enabled)) {
 				typedef void (*T) (void);
 				static T ss_tramp;
@@ -7567,6 +7664,10 @@ MINT_IN_CASE(MINT_BRTRUE_I8_SP) ZEROP_SP(gint64, !=); MINT_IN_BREAK;
 			++ip;
 			MINT_IN_BREAK;
 		MINT_IN_CASE(MINT_SDB_SEQ_POINT)
+			if (frame->remap_method && apply_deferred_debug_remap (frame, context, &ip)) {
+				CHECK_RESUME_STATE (context);
+				goto main_loop;
+			}
 			/* Just a placeholder for a breakpoint */
 #if HOST_WASI
 			if (debugger_enabled) {
@@ -7578,6 +7679,10 @@ MINT_IN_CASE(MINT_BRTRUE_I8_SP) ZEROP_SP(gint64, !=); MINT_IN_BREAK;
 			++ip;
 			MINT_IN_BREAK;
 		MINT_IN_CASE(MINT_SDB_BREAKPOINT) {
+			if (frame->remap_method && apply_deferred_debug_remap (frame, context, &ip)) {
+				CHECK_RESUME_STATE (context);
+				goto main_loop;
+			}
 			typedef void (*T) (void);
 			static T bp_tramp;
 			if (!bp_tramp) {
@@ -8197,6 +8302,8 @@ resume:
 	g_assert (frame->imethod);
 
 	if (frame == context->handler_frame) {
+		frame->remap_method = NULL;
+		frame->remap_source = frame->remap_destination = NULL;
 		/*
 		 * When running finally blocks, we can have the same frame twice on the stack. If we have
 		 * clause_args information, we need to check whether resuming should happen inside this
@@ -8839,6 +8946,15 @@ same_debug_il (InterpMethod *previous, InterpMethod *updated)
 }
 
 static InterpMethod*
+copy_imethod (InterpMethod *method)
+{
+	InterpMethod *copy = (InterpMethod*)m_method_alloc0 (method->method, sizeof (InterpMethod));
+	memcpy (copy, method, sizeof (InterpMethod));
+	copy->next_jit_code_hash = NULL;
+	return copy;
+}
+
+static InterpMethod*
 debug_frame_method (InterpFrame *frame, MonoError *error)
 {
 	InterpMethod *previous = frame->imethod;
@@ -8929,7 +9045,75 @@ interp_frame_set_ip (MonoInterpFrameHandle handle, MonoJitTlsData *jit_tls, gint
 	frame->imethod = updated;
 	frame->state.ip = destination + 1;
 	frame->debugger_break_completed = completed_break;
+	frame->remap_method = NULL;
+	frame->remap_source = frame->remap_destination = NULL;
 	return destination;
+}
+
+static InterpDebugReturnPoint*
+frame_debug_return_point (InterpFrame *frame)
+{
+	if (!frame->state.ip)
+		return NULL;
+	const guint16 *continuation = frame->state.ip;
+	if (*continuation == MINT_SDB_INTR_LOC)
+		++continuation;
+	guint32 offset = GPTRDIFF_TO_UINT32 ((const guint8*)continuation - (guint8*)frame->imethod->code);
+	for (InterpDebugReturnPoint *point = frame->imethod->debug_return_points; point; point = point->next)
+		if (point->native_offset == offset)
+			return point;
+	return NULL;
+}
+
+static gint32
+interp_frame_return_offset (MonoInterpFrameHandle handle)
+{
+	InterpDebugReturnPoint *point = frame_debug_return_point ((InterpFrame*)handle);
+	return point ? point->il_offset : -1;
+}
+
+static void
+interp_frame_defer_remap (MonoInterpFrameHandle handle, MonoJitTlsData *jit_tls, gint32 il_offset, MonoError *error)
+{
+	InterpFrame *frame = (InterpFrame*)handle;
+	InterpMethod *previous = frame->imethod;
+	InterpMethod *updated = debug_frame_method (frame, error);
+	return_if_nok (error);
+	InterpDebugReturnPoint *source = frame_debug_return_point (frame);
+	InterpDebugReturnPoint *destination = NULL;
+	for (InterpDebugReturnPoint *point = updated->debug_return_points; point; point = point->next)
+		if (point->il_offset == il_offset)
+			destination = point;
+	if (!source || !destination || source->count != destination->count) {
+		mono_error_set_not_supported (error, "The updated call has no compatible interpreter return continuation.");
+		return;
+	}
+	if (!same_debug_frame_layout (previous, updated, TRUE, error)
+		|| (previous != updated && !same_debug_exception_state (frame, updated,
+			(guint16*)((guint8*)updated->code + destination->native_offset), error)))
+		return;
+	for (guint32 i = 0; i < source->count; ++i) {
+		InterpDebugStackValue *old_value = &source->values [i];
+		InterpDebugStackValue *new_value = &destination->values [i];
+		if (old_value->type != new_value->type || old_value->klass != new_value->klass || old_value->size != new_value->size
+			|| old_value->offset < previous->debug_persistent_size || new_value->offset < updated->debug_persistent_size
+			|| old_value->offset > previous->alloca_size || old_value->size > previous->alloca_size - old_value->offset
+			|| new_value->offset > updated->alloca_size || new_value->size > updated->alloca_size - new_value->offset) {
+			mono_error_set_not_supported (error, "Hot Reload changed the types or storage of the call's live evaluation stack.");
+			return;
+		}
+	}
+	ThreadContext *context = (ThreadContext*)jit_tls->interp_context;
+	guchar *storage = (guchar*)frame->stack;
+	if (!context || storage < context->stack_start || storage >= context->stack_end
+		|| updated->alloca_size >= (gsize)(context->stack_end - storage)) {
+		mono_error_set_not_supported (error, "The updated caller exceeds its interpreter stack reservation.");
+		return;
+	}
+	// Later deltas invalidate the shared method even while this continuation is pending.
+	frame->remap_method = copy_imethod (updated);
+	frame->remap_source = source;
+	frame->remap_destination = destination;
 }
 
 static gpointer
@@ -9214,10 +9398,7 @@ invalidate_transform (gpointer imethod_, gpointer user_data)
 static void
 copy_imethod_for_frame (InterpFrame *frame)
 {
-	InterpMethod *copy = (InterpMethod *) m_method_alloc0 (frame->imethod->method, sizeof (InterpMethod));
-	memcpy (copy, frame->imethod, sizeof (InterpMethod));
-	copy->next_jit_code_hash = NULL; /* we don't want that in our copy */
-	frame->imethod = copy;
+	frame->imethod = copy_imethod (frame->imethod);
 	/* Note: The copy will be around until the method is unloaded. Ideally we
 	 * would reclaim its memory when the corresponding InterpFrame is popped.
 	 */
