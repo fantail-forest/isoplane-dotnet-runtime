@@ -893,23 +893,17 @@ mono_debugger_agent_cleanup (void)
  * recv() + handle incomplete reads and EINTR
  */
 static int
-socket_transport_recv (void *buf, int len)
+socket_transport_recv_flags (void *buf, int len, int flags)
 {
 	int res;
 	int total = 0;
 	SOCKET fd = conn_fd;
-	int flags = 0;
-#ifdef HOST_WASI
-	if (!disconnected || len == HEADER_LENGTH) {
-		flags = MSG_DONTWAIT;
-	}
-#endif
 	static gint64 last_keepalive;
 	gint64 msecs;
 
 	MONO_REQ_GC_SAFE_MODE;
 
-	do {
+	while (total < len) {
 	again:
 		res = recv (fd, (char *) buf + total, len - total, flags);
 		if (res > 0)
@@ -940,10 +934,9 @@ socket_transport_recv (void *buf, int len)
 			}
 #ifdef HOST_WASI
 			if (last_err == MONO_EWOULDBLOCK) {
-				if (total == 0) {
+				if (total == 0 && (flags & MSG_DONTWAIT)) {
 					return 0;
 				}
-				// if we already have part of the message, finish reading it, enable blocking
 				flags = 0;
 				continue;
 			}
@@ -951,13 +944,25 @@ socket_transport_recv (void *buf, int len)
 			return res;
 		}
 #ifdef HOST_WASI
-		else if (total == 0) {
-			return 0;
+		if (res == 0) {
+			/* Zero is reserved for an idle nonblocking header probe, not EOF. */
+			return SOCKET_ERROR;
 		}
+		/* After the first byte, finish the record before polling another command. */
+		flags = 0;
+#else
+		if (res == 0)
+			return total;
 #endif
-	} while (res > 0 && total < len);
+	}
 
 	return total;
+}
+
+static int
+socket_transport_recv (void *buf, int len)
+{
+	return socket_transport_recv_flags (buf, len, 0);
 }
 
 static void
@@ -1407,6 +1412,21 @@ transport_recv (void *buf, int len)
 	result = transport->recv (buf, len);
 	MONO_EXIT_GC_SAFE;
 	return result;
+}
+
+static int
+transport_recv_header (void *buf)
+{
+#if defined(HOST_WASI) && !defined(DISABLE_SOCKET_TRANSPORT)
+	if (transport->recv == socket_transport_recv) {
+		int result;
+		MONO_ENTER_GC_SAFE;
+		result = socket_transport_recv_flags (buf, HEADER_LENGTH, MSG_DONTWAIT);
+		MONO_EXIT_GC_SAFE;
+		return result;
+	}
+#endif
+	return transport_recv (buf, HEADER_LENGTH);
 }
 
 static gboolean
@@ -11791,10 +11811,17 @@ gboolean mono_debugger_agent_receive_and_process_command (void)
 	gboolean log_each_step = g_hasenv ("MONO_DEBUGGER_LOG_AFTER_COMMAND");
 #ifdef HOST_WASI
 	int command_suspend_count = wasi_suspend_count;
+	GET_DEBUGGER_TLS();
+	static guint invoke_poll_sequence_points;
+	/* Evaluations visit framework sequence points too; amortize idle socket probes
+	 * while still servicing cancellation and other commands during an invocation. */
+	if (tls && tls->disable_breakpoint_and_stepping && ++invoke_poll_sequence_points < 64)
+		return FALSE;
+	invoke_poll_sequence_points = 0;
 #endif
 
 	while (TRUE) {
-		res = transport_recv (header, HEADER_LENGTH);
+		res = transport_recv_header (header);
 
 #ifdef HOST_WASI //on wasi we can try to get message from debugger and don't have any message
 		if (res == 0) {
