@@ -181,6 +181,7 @@ typedef struct MonoComponentDebugger {
 	void (*breakpoint_hit) (void *sigctx);
 	void (*single_step_event) (void *sigctx);
 	void (*single_step_from_context) (MonoContext *ctx);
+	void (*frame_remapped) (void);
 	void (*breakpoint_from_context) (MonoContext *ctx);
 	void (*free_mem_manager) (gpointer mem_manager);
 	void (*unhandled_exception) (MonoException *exc);
