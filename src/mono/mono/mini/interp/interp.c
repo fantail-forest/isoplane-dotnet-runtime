@@ -258,6 +258,7 @@ reinit_frame (InterpFrame *frame, InterpFrame *parent, InterpMethod *imethod, gp
 	frame->stack = (stackval*)stack;
 	frame->retval = (stackval*)retval;
 	frame->state.ip = NULL;
+	frame->debugger_break_completed = FALSE;
 }
 
 #define STACK_ADD_ALIGNED_BYTES(sp,bytes) ((stackval*)((char*)(sp) + (bytes)))
@@ -4164,7 +4165,10 @@ main_loop:
 		MINT_IN_CASE(MINT_BREAK)
 			++ip;
 			SAVE_INTERP_STATE (frame);
+			frame->debugger_break_completed = TRUE;
 			do_debugger_tramp (mono_component_debugger ()->user_break, frame);
+			frame->debugger_break_completed = FALSE;
+			CHECK_RESUME_STATE (context);
 			MINT_IN_BREAK;
 		MINT_IN_CASE(MINT_BREAKPOINT)
 			++ip;
@@ -8854,10 +8858,28 @@ debug_frame_method (InterpFrame *frame, MonoError *error)
 	return updated;
 }
 
-static gpointer
-interp_frame_set_ip (MonoInterpFrameHandle handle, MonoJitTlsData *jit_tls, gint32 il_offset, MonoError *error)
+static gboolean
+interp_frame_can_remap (MonoInterpFrameHandle handle, MonoError *error)
 {
 	InterpFrame *frame = (InterpFrame*)handle;
+	if (frame->debugger_break_completed)
+		return TRUE;
+	if (!frame->state.ip || !frame->imethod->jinfo->seq_points)
+		return FALSE;
+	int offset = GPTRDIFF_TO_INT ((guint8*)interp_frame_get_ip (frame) - (guint8*)frame->imethod->jinfo->code_start);
+	SeqPoint point;
+	return mono_seq_point_find_prev_by_native_offset (frame->imethod->jinfo->seq_points, offset, &point)
+		&& point.native_offset == offset;
+}
+
+static gpointer
+interp_frame_set_ip (MonoInterpFrameHandle handle, MonoJitTlsData *jit_tls, gint32 il_offset, gboolean remap, MonoError *error)
+{
+	InterpFrame *frame = (InterpFrame*)handle;
+	if (remap && !interp_frame_can_remap (handle, error)) {
+		mono_error_set_not_supported (error, "The active frame is not paused at a remappable statement boundary.");
+		return NULL;
+	}
 	InterpMethod *previous = frame->imethod;
 	InterpMethod *updated = debug_frame_method (frame, error);
 	return_val_if_nok (error, NULL);
@@ -8871,6 +8893,23 @@ interp_frame_set_ip (MonoInterpFrameHandle handle, MonoJitTlsData *jit_tls, gint
 		return NULL;
 	}
 	guint16 *destination = (guint16*)((guint8*)updated->jinfo->code_start + point.native_offset);
+	gboolean completed_break = remap && frame->debugger_break_completed;
+	if (completed_break) {
+		guint16 *end = (guint16*)((guint8*)updated->jinfo->code_start + updated->jinfo->code_size);
+		if (*destination != MINT_SDB_SEQ_POINT && *destination != MINT_SDB_BREAKPOINT) {
+			mono_error_set_not_supported (error, "The edited break statement has no debugger sequence point.");
+			return NULL;
+		}
+		destination++;
+		while (destination < end && *destination == MINT_NOP)
+			destination++;
+		if (destination >= end || *destination != MINT_BREAK) {
+			mono_error_set_not_supported (error, "The edited active statement no longer consists of the completed debugger break.");
+			return NULL;
+		}
+		// Resuming a completed Debugger.Break must not invoke it again.
+		destination++;
+	}
 	if (previous->code != updated->code && !same_debug_exception_state (frame, updated, destination, error))
 		return NULL;
 	if (previous->code != updated->code) {
@@ -8889,6 +8928,7 @@ interp_frame_set_ip (MonoInterpFrameHandle handle, MonoJitTlsData *jit_tls, gint
 	}
 	frame->imethod = updated;
 	frame->state.ip = destination + 1;
+	frame->debugger_break_completed = completed_break;
 	return destination;
 }
 
