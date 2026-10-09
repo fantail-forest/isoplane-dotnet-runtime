@@ -4694,6 +4694,21 @@ capture_debug_return_point (TransformData *td, int il_offset)
 	return point;
 }
 
+static InterpInst*
+add_call_return_sequence_point (TransformData *td, MonoMethod *method, InterpInst *previous, gboolean *emitted_call, int il_offset)
+{
+	if (!(method->flags & METHOD_IMPL_ATTRIBUTE_NATIVE)) {
+		if (*emitted_call && previous)
+			previous->flags |= INTERP_INST_FLAG_SEQ_POINT_NESTED_CALL;
+		*emitted_call = TRUE;
+	}
+	InterpInst *point = interp_add_ins (td, MINT_SDB_SEQ_POINT);
+	point->il_offset = il_offset;
+	point->flags = INTERP_INST_FLAG_SEQ_POINT_NONEMPTY_STACK;
+	point->info.debug_return_point = capture_debug_return_point (td, il_offset);
+	return point;
+}
+
 static void
 interp_method_compute_offsets (TransformData *td, InterpMethod *imethod, MonoMethodSignature *sig, MonoMethodHeader *header, MonoError *error)
 {
@@ -6033,20 +6048,8 @@ retry_emit:
 				goto exit;
 
 			if (need_seq_point && !generate_enc_seq_points_without_debug_info) {
-				// check if it is a nested call and remove the MONO_INST_NONEMPTY_STACK of the last breakpoint, only for non native methods
-				if (!(method->flags & METHOD_IMPL_ATTRIBUTE_NATIVE)) {
-					if (emitted_funccall_seq_point)	{
-						if (last_seq_point)
-							last_seq_point->flags |= INTERP_INST_FLAG_SEQ_POINT_NESTED_CALL;
-					}
-					else
-						emitted_funccall_seq_point = TRUE;
-				}
-				last_seq_point = interp_add_ins (td, MINT_SDB_SEQ_POINT);
-				// This seq point is actually associated with the instruction following the call
-				last_seq_point->il_offset = GPTRDIFF_TO_INT (td->ip - header->code);
-				last_seq_point->flags = INTERP_INST_FLAG_SEQ_POINT_NONEMPTY_STACK;
-				last_seq_point->info.debug_return_point = capture_debug_return_point (td, last_seq_point->il_offset);
+				last_seq_point = add_call_return_sequence_point (td, method, last_seq_point,
+					&emitted_funccall_seq_point, GPTRDIFF_TO_INT (td->ip - header->code));
 			}
 
 			if (sym_seq_points && !need_seq_point)
@@ -7080,6 +7083,14 @@ retry_emit:
 					call_args [i] = td->sp [i].var;
 				call_args [csignature->param_count + 1] = -1;
 				td->last_ins->info.call_info->call_args = call_args;
+			}
+			if (sym_seq_points && !generate_enc_seq_points_without_debug_info) {
+				int continuation = GPTRDIFF_TO_INT (td->ip - header->code);
+				if (mono_bitset_test_fast (seq_point_locs, continuation))
+					td->pending_debug_return_point = capture_debug_return_point (td, continuation);
+				else
+					last_seq_point = add_call_return_sequence_point (td, method, last_seq_point,
+						&emitted_funccall_seq_point, continuation);
 			}
 			break;
 		}
