@@ -9,5 +9,9 @@
 			<method name="PollWasiEventLoopUntilResolvedVoid" />
 			<method name="RunWasiEventLoopOnce" />
 		</type>
+		<!-- called by the Isoplane SDK when a guest instance activates from its snapshot -->
+		<type fullname="System.Random">
+			<method name="ReseedAfterIsoplaneActivation" />
+		</type>
 	</assembly>
 </linker>

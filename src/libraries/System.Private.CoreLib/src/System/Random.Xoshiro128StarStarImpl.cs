@@ -30,7 +30,19 @@ namespace System
 
             private uint _s0, _s1, _s2, _s3;
 
-            public unsafe XoshiroImpl()
+            public XoshiroImpl()
+            {
+                Seed();
+#if TARGET_WASI
+                TrackUntilActivation(this);
+#endif
+            }
+
+#if TARGET_WASI
+            internal override void Reseed() => Seed();
+#endif
+
+            private unsafe void Seed()
             {
                 uint* ptr = stackalloc uint[4];
                 do

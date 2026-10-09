@@ -11,6 +11,11 @@ namespace System
         /// <summary>Base type for all generator implementations that plug into the base Random.</summary>
         internal abstract class ImplBase
         {
+#if TARGET_WASI
+            /// <summary>Replaces the state of a generator that seeded itself. Deterministic generators keep theirs.</summary>
+            internal virtual void Reseed() { }
+#endif
+
             public abstract double Sample();
 
             public abstract int Next();

@@ -10,9 +10,17 @@ namespace System.Diagnostics
     {
         [ThreadStatic] private static RandomNumberGenerator? t_random;
 
-        private ulong _s0, _s1, _s2, _s3;
-
         public static RandomNumberGenerator Current => t_random ??= new RandomNumberGenerator();
+
+#if NET
+        // An Isoplane guest instance starts as a copy of a memory snapshot, and a generator seeded here
+        // would be copied with it, giving every copy the same trace and span identifiers. An unseeded
+        // Random is reseeded by the runtime when the instance activates.
+        private readonly Random _random = new Random();
+
+        public long Next() => _random.NextInt64(long.MinValue, long.MaxValue);
+#else
+        private ulong _s0, _s1, _s2, _s3;
 
         public unsafe RandomNumberGenerator()
         {
@@ -55,5 +63,6 @@ namespace System.Diagnostics
 
             return (long)result;
         }
+#endif
     }
 }
