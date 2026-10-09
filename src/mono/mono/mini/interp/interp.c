@@ -2245,6 +2245,17 @@ static MONO_NEVER_INLINE MonoObject*
 interp_runtime_invoke (MonoMethod *method, void *obj, void **params, MonoObject **exc, MonoError *error)
 {
 	ThreadContext *context = get_context ();
+	/* A debugger jump belongs to the paused invocation, not a nested evaluation. */
+	InterpFrame *jump_frame = context->has_resume_state && !context->handler_ei ? context->handler_frame : NULL;
+	const guint16 *jump_ip = context->handler_ip;
+	MonoGCHandle jump_handle = 0;
+	if (jump_frame) {
+		jump_handle = context->exc_gchandle;
+		context->has_resume_state = FALSE;
+		context->handler_frame = NULL;
+		context->handler_ip = NULL;
+		context->exc_gchandle = 0;
+	}
 	MonoMethodSignature *sig = mono_method_signature_internal (method);
 	stackval *sp = (stackval*)context->stack_pointer;
 	MonoMethod *target_method = method;
@@ -2289,6 +2300,8 @@ interp_runtime_invoke (MonoMethod *method, void *obj, void **params, MonoObject 
 	context->stack_pointer = (guchar*)sp;
 
 	if (context->has_resume_state) {
+		if (jump_handle)
+			mono_gchandle_free_internal (jump_handle);
 		/*
 		 * This can happen on wasm where native frames cannot be skipped during EH.
 		 * EH processing will continue when control returns to the interpreter.
@@ -2296,6 +2309,13 @@ interp_runtime_invoke (MonoMethod *method, void *obj, void **params, MonoObject 
 		if (mono_aot_mode == MONO_AOT_MODE_LLVMONLY_INTERP)
 			mono_llvm_start_native_unwind ();
 		return NULL;
+	}
+	if (jump_frame) {
+		context->has_resume_state = TRUE;
+		context->handler_frame = jump_frame;
+		context->handler_ip = jump_ip;
+		context->handler_ei = NULL;
+		context->exc_gchandle = jump_handle;
 	}
 	// The return value is at the bottom of the stack
 	return frame.stack->data.o;
