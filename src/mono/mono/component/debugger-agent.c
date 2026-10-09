@@ -10454,7 +10454,8 @@ thread_commands (int command, guint8 *p, guint8 *end, Buffer *buf)
 	case CMD_THREAD_GET_TID:
 		buffer_add_long (buf, (guint64)thread->tid);
 		break;
-	case CMD_THREAD_SET_IP: {
+	case CMD_THREAD_SET_IP:
+	case MDBGPROT_CMD_THREAD_REMAP_IP: {
 		MonoMethod *method;
 		MonoDomain *domain;
 		MonoSeqPointInfo *seq_points;
@@ -10486,7 +10487,7 @@ thread_commands (int command, guint8 *p, guint8 *end, Buffer *buf)
 		if (tls->frames [0]->de.ji->is_interp) {
 			MonoJitTlsData *jit_data = thread->thread_info->jit_data;
 			ERROR_DECL (error);
-			gpointer destination = mini_get_interp_callbacks_api ()->frame_set_ip (tls->frames [0]->interp_frame, jit_data, GINT64_TO_INT32 (il_offset), error);
+			gpointer destination = mini_get_interp_callbacks_api ()->frame_set_ip (tls->frames [0]->interp_frame, jit_data, GINT64_TO_INT32 (il_offset), command == MDBGPROT_CMD_THREAD_REMAP_IP, error);
 			if (!is_ok (error)) {
 				add_error_string (buf, mono_error_get_message (error));
 				mono_error_cleanup (error);
@@ -10631,6 +10632,17 @@ frame_commands (int command, guint8 *p, guint8 *end, Buffer *buf)
 	if (command == CMD_STACK_FRAME_GET_DOMAIN) {
 		if (CHECK_PROTOCOL_VERSION (2, 38))
 			buffer_add_domainid (buf, frame->de.domain);
+		return ERR_NONE;
+	}
+
+	if (command == MDBGPROT_CMD_STACK_FRAME_CAN_REMAP) {
+		gboolean can_remap = frame_idx == 0 && frame->interp_frame && frame->de.ji && frame->de.ji->is_interp
+			&& mini_get_interp_callbacks_api ()->frame_can_remap (frame->interp_frame, error);
+		if (!is_ok (error)) {
+			mono_error_cleanup (error);
+			return ERR_ABSENT_INFORMATION;
+		}
+		buffer_add_byte (buf, can_remap);
 		return ERR_NONE;
 	}
 
