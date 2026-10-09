@@ -251,6 +251,7 @@ struct InterpFrame {
 	/* State saved before calls */
 	/* This is valid if state.ip != NULL */
 	InterpState state;
+	gboolean debugger_break_completed;
 };
 
 #define frame_locals(frame) ((guchar*)(frame)->stack)
