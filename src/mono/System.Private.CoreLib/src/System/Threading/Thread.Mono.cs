@@ -192,6 +192,12 @@ namespace System.Threading
         public bool Join(int millisecondsTimeout)
         {
             ArgumentOutOfRangeException.ThrowIfLessThan(millisecondsTimeout, Timeout.Infinite);
+            // A WASI guest's one thread cannot outlive itself: joining it
+            // would spin until the host's budget ended the call.
+            if (OperatingSystem.IsWasi() && millisecondsTimeout != 0 && this == CurrentThread)
+            {
+                throw new PlatformNotSupportedException();
+            }
             return JoinInternal(this, millisecondsTimeout);
         }
 
