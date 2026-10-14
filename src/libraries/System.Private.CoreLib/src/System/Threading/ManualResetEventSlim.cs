@@ -352,9 +352,6 @@ namespace System.Threading
 #endif
         public void Wait()
         {
-#if TARGET_WASI
-            if (OperatingSystem.IsWasi()) throw new PlatformNotSupportedException(); // TODO remove with https://github.com/dotnet/runtime/pull/107185
-#endif
             Wait(Timeout.Infinite, CancellationToken.None);
         }
 
@@ -491,9 +488,6 @@ namespace System.Threading
 
             ArgumentOutOfRangeException.ThrowIfLessThan(millisecondsTimeout, -1);
 
-#if TARGET_WASI
-            if (OperatingSystem.IsWasi()) throw new PlatformNotSupportedException(); // TODO remove with https://github.com/dotnet/runtime/pull/107185
-#endif
 #if FEATURE_WASM_MANAGED_THREADS
             Thread.AssureBlockingPossible();
 #endif
@@ -506,6 +500,12 @@ namespace System.Threading
                     return false;
                 }
 
+                // A WASI guest has one thread, so nothing could set the event
+                // while this wait blocked; an unset event refuses the wait.
+                if (OperatingSystem.IsWasi())
+                {
+                    throw new PlatformNotSupportedException();
+                }
 
                 // We spin briefly before falling back to allocating and/or waiting on a true event.
                 long startTime = 0;
