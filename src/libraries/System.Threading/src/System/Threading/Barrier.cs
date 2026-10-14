@@ -676,6 +676,12 @@ namespace System.Threading
                         return true;
                     }
                 }
+                // A WASI guest has one thread, so no other participant could
+                // arrive while this one waited; refuse before signalling.
+                else if (millisecondsTimeout != 0 && OperatingSystem.IsWasi())
+                {
+                    throw new PlatformNotSupportedException();
+                }
                 else if (SetCurrentTotal(currentTotal, current + 1, total, sense))
                 {
                     break;
