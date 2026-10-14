@@ -291,6 +291,18 @@ namespace System.Threading
                 Debug.Assert(timeoutMilliseconds >= -1);
                 Debug.Assert(timeoutMilliseconds != 0); // caller should have taken care of it
 
+                // A WASI guest has one thread, so nothing could signal what it
+                // waits for, and its clock stands still inside a call: the wait
+                // would spin until the host's budget ended it.
+                if (OperatingSystem.IsWasi())
+                {
+                    if (!isSleep)
+                    {
+                        UnregisterWait();
+                    }
+                    throw new PlatformNotSupportedException();
+                }
+
                 _thread.SetWaitSleepJoinState();
 
                 // <see cref="_waitMonitor"/> must be acquired before <see cref="s_lock"/> is released, to ensure that there is
