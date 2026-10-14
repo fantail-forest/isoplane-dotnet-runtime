@@ -1305,6 +1305,15 @@ mono_monitor_wait (MonoObjectHandle obj_handle, guint32 ms, MonoBoolean allow_in
 	if (!mono_monitor_ensure_owned (lw, id))
 		return FALSE;
 
+#ifdef DISABLE_THREADS
+	/* With no other thread, nothing can pulse the monitor: a zero wait has
+	 * timed out already, and any other wait would never end. */
+	if (ms == 0)
+		return FALSE;
+	mono_error_set_platform_not_supported (error, "Cannot wait on monitors on this runtime.");
+	return FALSE;
+#endif
+
 	if (!lock_word_is_inflated (lw)) {
 		mono_monitor_inflate_owned (obj, id);
 		lw.sync = obj->synchronisation;
@@ -1318,13 +1327,6 @@ mono_monitor_wait (MonoObjectHandle obj_handle, guint32 ms, MonoBoolean allow_in
 		mono_error_set_pending_exception (error);
 		return FALSE;
 	}
-
-#ifdef DISABLE_THREADS
-	if (ms == MONO_INFINITE_WAIT) {
-		mono_error_set_platform_not_supported (error, "Cannot wait on monitors on this runtime.");
-		return FALSE;
-	}
-#endif
 
 	LOCK_DEBUG (g_message ("%s: (%d) queuing handle %p", __func__, id, event));
 
