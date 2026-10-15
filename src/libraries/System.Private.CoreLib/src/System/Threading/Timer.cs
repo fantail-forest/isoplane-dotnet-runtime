@@ -833,6 +833,12 @@ namespace System.Threading
     [DebuggerTypeProxy(typeof(TimerQueueTimer.TimerDebuggerTypeProxy))]
     public sealed class Timer : MarshalByRefObject, IDisposable, IAsyncDisposable, ITimer
     {
+#if TARGET_WASI
+        /// <summary>Moves every scheduled timer by the time between this instance's snapshot and its activation.</summary>
+        /// <remarks>Called once per activation by the Isoplane SDK through UnsafeAccessor.</remarks>
+        internal static void ShiftForIsoplaneActivation(long elapsedMs) => TimerQueue.ShiftScheduledTimers(elapsedMs);
+#endif
+
         internal const uint MaxSupportedTimeout = 0xfffffffe;
 
         internal TimerHolder _timer;
