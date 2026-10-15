@@ -115,6 +115,35 @@ namespace System.Threading
             SetNextTimer(ShortestDueTime(), TickCount64);
         }
 
+        // An instance activated from a snapshot taken elapsedMs earlier sees its
+        // clock that much later. Every absolute time the queues hold moves with
+        // it, so a timer set before the snapshot counts its interval from
+        // activation rather than coming due at once.
+        internal static void ShiftScheduledTimers(long elapsedMs)
+        {
+            foreach (TimerQueue queue in Instances)
+            {
+                lock (queue)
+                {
+                    for (TimerQueueTimer? timer = queue._shortTimers; timer != null; timer = timer._next)
+                    {
+                        timer._startTicks += elapsedMs;
+                    }
+                    for (TimerQueueTimer? timer = queue._longTimers; timer != null; timer = timer._next)
+                    {
+                        timer._startTicks += elapsedMs;
+                    }
+                    queue._currentAbsoluteThreshold += elapsedMs;
+                    queue._currentTimerStartTicks += elapsedMs;
+                    queue._scheduledDueTimeMs += elapsedMs;
+                }
+            }
+
+            // The armed host timer was set for the old earliest deadline.
+            s_shortestDueTimeMs = long.MaxValue;
+            SetNextTimer(ShortestDueTime(), TickCount64);
+        }
+
         private static void ReleaseArmedTimer()
         {
             CancellationTokenSource? armed = s_armed;
