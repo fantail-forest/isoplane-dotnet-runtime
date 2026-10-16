@@ -485,6 +485,9 @@ namespace System.Threading
         private readonly TimerCallback _timerCallback;
         private readonly object? _state;
         private readonly ExecutionContext? _executionContext;
+#if TARGET_WASI
+        internal ExecutionContext? IsoplaneExecutionContext => _executionContext;
+#endif
 
         // When Timer.Dispose(WaitHandle) is used, we need to signal the wait handle only
         // after all pending callbacks are complete.  We set _canceled to prevent any callbacks that
