@@ -574,6 +574,14 @@ namespace System.Threading
                 }
             }
 
+#if TARGET_WASI
+            // Outside the queue's lock: the observer logs.
+            if (success && dueTime != Timeout.UnsignedInfinite && period != Timeout.UnsignedInfinite)
+            {
+                Timer.s_isoplanePeriodicTimerScheduled?.Invoke(_timerCallback, period);
+            }
+#endif
+
             return success;
         }
 
@@ -837,6 +845,10 @@ namespace System.Threading
         /// <summary>Moves every scheduled timer by the time between this instance's snapshot and its activation.</summary>
         /// <remarks>Called once per activation by the Isoplane SDK through UnsafeAccessor.</remarks>
         internal static void ShiftForIsoplaneActivation(long elapsedMs) => TimerQueue.ShiftScheduledTimers(elapsedMs);
+
+        /// <summary>Told of each periodic timer as it is scheduled: its callback and its period in milliseconds.</summary>
+        /// <remarks>Set by the Isoplane SDK through UnsafeAccessor, to tell a developer what running their timers between requests costs.</remarks>
+        internal static Action<Delegate, uint>? s_isoplanePeriodicTimerScheduled;
 #endif
 
         internal const uint MaxSupportedTimeout = 0xfffffffe;
