@@ -621,6 +621,10 @@ namespace System.Threading
         public void Enqueue(object callback, bool forceGlobal)
         {
             Debug.Assert((callback is IThreadPoolWorkItem) ^ (callback is Task));
+#if TARGET_WASI
+            if (IsoplaneDefers(callback))
+                return;
+#endif
 
             if (_loggingEnabled && FrameworkEventSource.Log.IsEnabled())
                 FrameworkEventSource.Log.ThreadPoolEnqueueWorkObject(callback);
@@ -690,6 +694,10 @@ namespace System.Threading
         public void EnqueueAtHighPriority(object workItem)
         {
             Debug.Assert((workItem is IThreadPoolWorkItem) ^ (workItem is Task));
+#if TARGET_WASI
+            if (IsoplaneDefers(workItem))
+                return;
+#endif
 
             if (_loggingEnabled && FrameworkEventSource.Log.IsEnabled())
                 FrameworkEventSource.Log.ThreadPoolEnqueueWorkObject(workItem);
@@ -930,6 +938,69 @@ namespace System.Threading
         /// <c>true</c> if this thread did as much work as was available or its quantum expired.
         /// <c>false</c> if this thread stopped working early.
         /// </returns>
+#if TARGET_WASI
+        // Isoplane runs several dispatches on one instance and gives each its
+        // own slices of the one thread. A work item belongs to the dispatch
+        // recorded in the execution context it runs under; one for a dispatch
+        // other than the current one waits until that dispatch's next slice,
+        // so a slice runs only its own dispatch's code. Work that carries no
+        // open dispatch belongs to the instance and runs in any slice.
+        internal static readonly AsyncLocal<long> s_isoplaneDispatch = new AsyncLocal<long>();
+        // Open dispatches, each with the work waiting for its next slice.
+        private static readonly Dictionary<long, Queue<object>?> s_isoplaneWaiting = new Dictionary<long, Queue<object>?>();
+        private static long s_isoplaneCurrent;
+
+        internal static void IsoplaneOpen(long dispatch) => s_isoplaneWaiting[dispatch] = null;
+
+        /// <summary>Begins a slice of <paramref name="dispatch"/>: its waiting work becomes runnable.</summary>
+        internal static void IsoplaneEnter(long dispatch)
+        {
+            s_isoplaneCurrent = dispatch;
+            if (s_isoplaneWaiting.TryGetValue(dispatch, out Queue<object>? waiting) && waiting is not null)
+            {
+                s_isoplaneWaiting[dispatch] = null;
+                while (waiting.TryDequeue(out object? workItem))
+                    ThreadPool.s_workQueue.Enqueue(workItem, forceGlobal: true);
+            }
+        }
+
+        internal static bool IsoplaneHasWaiting(long dispatch) =>
+            s_isoplaneWaiting.TryGetValue(dispatch, out Queue<object>? waiting) && waiting is { Count: > 0 };
+
+        /// <summary>Closes <paramref name="dispatch"/>: what waited for it becomes instance work.</summary>
+        internal static void IsoplaneClose(long dispatch)
+        {
+            if (s_isoplaneCurrent == dispatch)
+                s_isoplaneCurrent = 0;
+            if (s_isoplaneWaiting.Remove(dispatch, out Queue<object>? waiting) && waiting is not null)
+            {
+                while (waiting.TryDequeue(out object? workItem))
+                    ThreadPool.s_workQueue.Enqueue(workItem, forceGlobal: true);
+            }
+        }
+
+        private static bool IsoplaneDefers(object workItem)
+        {
+            if (s_isoplaneWaiting.Count == 0)
+                return false;
+            ExecutionContext? context = workItem switch
+            {
+                Task task => task.IsoplaneExecutionContext,
+                QueueUserWorkItemCallbackBase callback => callback.IsoplaneExecutionContext,
+                AwaitTaskContinuation continuation => continuation.IsoplaneExecutionContext,
+                TimerQueueTimer timer => timer.IsoplaneExecutionContext,
+                _ => null,
+            };
+            if (context is null || !context.TryGetLocalValue(s_isoplaneDispatch, out object? value) || value is not long dispatch)
+                return false;
+            if (dispatch == 0 || dispatch == s_isoplaneCurrent || !s_isoplaneWaiting.TryGetValue(dispatch, out Queue<object>? waiting))
+                return false;
+            (waiting ??= new Queue<object>()).Enqueue(workItem);
+            s_isoplaneWaiting[dispatch] = waiting;
+            return true;
+        }
+#endif
+
         internal static bool Dispatch()
         {
             ThreadPoolWorkQueue workQueue = ThreadPool.s_workQueue;
@@ -1321,6 +1392,10 @@ namespace System.Threading
 
     internal abstract class QueueUserWorkItemCallbackBase : IThreadPoolWorkItem
     {
+#if TARGET_WASI
+        internal virtual ExecutionContext? IsoplaneExecutionContext => null;
+#endif
+
 #if DEBUG
         private bool _executed;
 
@@ -1355,6 +1430,10 @@ namespace System.Threading
             callback(quwi._state);
         };
 
+#if TARGET_WASI
+        internal override ExecutionContext? IsoplaneExecutionContext => _context;
+#endif
+
         internal QueueUserWorkItemCallback(WaitCallback callback, object? state, ExecutionContext context)
         {
             Debug.Assert(context != null);
@@ -1377,6 +1456,10 @@ namespace System.Threading
         private Action<TState>? _callback; // SOS's ThreadPool command depends on this name
         private readonly TState _state;
         private readonly ExecutionContext _context;
+
+#if TARGET_WASI
+        internal override ExecutionContext? IsoplaneExecutionContext => _context;
+#endif
 
         internal QueueUserWorkItemCallback(Action<TState> callback, TState state, ExecutionContext context)
         {

@@ -526,6 +526,10 @@ namespace System.Threading.Tasks
 
         protected int m_continuationId;
 
+#if TARGET_WASI
+        internal ExecutionContext? IsoplaneExecutionContext => m_capturedContext;
+#endif
+
         /// <summary>Initializes the continuation.</summary>
         /// <param name="action">The action to invoke. Must not be null.</param>
         /// <param name="flowExecutionContext">Whether to capture and restore ExecutionContext.</param>

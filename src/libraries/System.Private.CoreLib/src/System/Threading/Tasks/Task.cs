@@ -1620,6 +1620,15 @@ namespace System.Threading.Tasks
             // Faulted is "king" -- if that bit is present (regardless of other bits), we are faulted.
             (m_stateFlags & (int)TaskStateFlags.Faulted) != 0;
 
+#if TARGET_WASI
+        /// <summary>
+        /// The context the task runs under from the thread pool: an async state
+        /// machine box keeps its own in its state object field.
+        /// </summary>
+        internal ExecutionContext? IsoplaneExecutionContext =>
+            this is System.Runtime.CompilerServices.IAsyncStateMachineBox ? m_stateObject as ExecutionContext : CapturedContext;
+#endif
+
         /// <summary>
         /// The captured execution context for the current task to run inside
         /// If the TaskStateFlags.ExecutionContextIsNull flag is set, this means ExecutionContext.Capture returned null, otherwise
