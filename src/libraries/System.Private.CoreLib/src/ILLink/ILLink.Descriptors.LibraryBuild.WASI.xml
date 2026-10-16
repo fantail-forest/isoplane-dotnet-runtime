@@ -15,6 +15,7 @@
 		</type>
 		<type fullname="System.Threading.Timer">
 			<method name="ShiftForIsoplaneActivation" />
+			<field name="s_isoplanePeriodicTimerScheduled" />
 		</type>
 	</assembly>
 </linker>
