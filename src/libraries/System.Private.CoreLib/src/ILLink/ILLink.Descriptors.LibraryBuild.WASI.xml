@@ -13,6 +13,13 @@
 		<type fullname="System.Random">
 			<method name="ReseedAfterIsoplaneActivation" />
 		</type>
+		<type fullname="System.Threading.ExecutionContext">
+			<method name="IsoplaneDispatch" />
+			<method name="IsoplaneOpen" />
+			<method name="IsoplaneEnter" />
+			<method name="IsoplaneHasWaiting" />
+			<method name="IsoplaneClose" />
+		</type>
 		<type fullname="System.Threading.Timer">
 			<method name="ShiftForIsoplaneActivation" />
 			<field name="s_isoplanePeriodicTimerScheduled" />

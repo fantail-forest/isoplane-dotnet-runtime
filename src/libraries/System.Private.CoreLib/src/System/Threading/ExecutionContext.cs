@@ -49,6 +49,22 @@ namespace System.Threading
             throw new PlatformNotSupportedException();
         }
 
+#if TARGET_WASI
+        internal bool TryGetLocalValue(IAsyncLocal local, out object? value)
+        {
+            value = null;
+            return m_localValues is not null && m_localValues.TryGetValue(local, out value);
+        }
+
+        // The Isoplane SDK reaches the thread pool's dispatch partition through
+        // these, since ExecutionContext is a type its accessors can name.
+        internal static AsyncLocal<long> IsoplaneDispatch() => ThreadPoolWorkQueue.s_isoplaneDispatch;
+        internal static void IsoplaneOpen(long dispatch) => ThreadPoolWorkQueue.IsoplaneOpen(dispatch);
+        internal static void IsoplaneEnter(long dispatch) => ThreadPoolWorkQueue.IsoplaneEnter(dispatch);
+        internal static bool IsoplaneHasWaiting(long dispatch) => ThreadPoolWorkQueue.IsoplaneHasWaiting(dispatch);
+        internal static void IsoplaneClose(long dispatch) => ThreadPoolWorkQueue.IsoplaneClose(dispatch);
+#endif
+
         public static ExecutionContext? Capture()
         {
             ExecutionContext? executionContext = Thread.CurrentThread._executionContext;
