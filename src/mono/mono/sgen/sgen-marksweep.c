@@ -49,7 +49,11 @@ static int ms_block_size;
  * Don't allocate single blocks, but alloc a contingent of this many
  * blocks in one swoop.  This must be a power of two.
  */
-#ifndef TARGET_WASM
+#if !defined(TARGET_WASM) || defined(HOST_WASI)
+// On WASI each allocation is a posix_memalign, and one block aligned to its
+// own size costs nearly two blocks of linear memory, because the allocator's
+// header pushes the next aligned address a whole block on. A contingent pays
+// that once. Blocks are then never freed (see major_free_swept_blocks).
 #define MS_BLOCK_ALLOC_NUM	32
 #else
 // WASM doesn't support partial munmap, so we can't free individual blocks
@@ -2144,6 +2148,14 @@ major_free_swept_blocks (size_t section_reserve)
 		/*
 		 * sgen_free_os_memory () asserts in mono_vfree () because windows doesn't like freeing the middle of
 		 * a VirtualAlloc ()-ed block.
+		 */
+		return;
+#endif
+#ifdef HOST_WASI
+		/*
+		 * Blocks come in contingents that can only be freed whole, and a WASI
+		 * instance's linear memory never shrinks, so empty blocks stay for
+		 * the major heap to reuse.
 		 */
 		return;
 #endif
