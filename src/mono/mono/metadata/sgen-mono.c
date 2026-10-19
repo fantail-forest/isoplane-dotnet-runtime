@@ -18,6 +18,7 @@
 #include "sgen/sgen-cardtable.h"
 #include "sgen/sgen-pinning.h"
 #include "sgen/sgen-workers.h"
+#include "sgen/sgen-memory-governor.h"
 #include "metadata/class-init.h"
 #include "metadata/marshal.h"
 #include "metadata/method-builder.h"
@@ -2400,6 +2401,15 @@ mono_gc_get_gcmemoryinfo (
 	*total_available_memory_bytes = sgen_gc_info.total_available_memory_bytes;
 	*total_committed_bytes = sgen_gc_info.total_committed_bytes;
 }
+
+#ifdef HOST_WASI
+/* Called through a P/Invoke by the Isoplane SDK once an application has initialized. */
+void
+mono_gc_set_soft_heap_limit (guint64 soft_limit)
+{
+	sgen_memgov_set_soft_heap_limit ((size_t)soft_limit);
+}
+#endif
 
 void mono_gc_get_gctimeinfo (
 	guint64 *time_last_gc_100ns,
