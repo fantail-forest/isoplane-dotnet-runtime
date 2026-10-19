@@ -10,6 +10,9 @@
 
 /* Heap limits */
 void sgen_memgov_init (size_t max_heap, size_t soft_limit, gboolean debug_allowance, double min_allowance_ratio, double save_target);
+#ifdef HOST_WASI
+void sgen_memgov_set_soft_heap_limit (size_t soft_limit);
+#endif
 void sgen_memgov_release_space (mword size, int space);
 gboolean sgen_memgov_try_alloc_space (mword size, int space);
 
