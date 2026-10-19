@@ -534,6 +534,19 @@ sgen_memgov_try_alloc_space (mword size, int space)
 	return TRUE;
 }
 
+#ifdef HOST_WASI
+/*
+ * An Isoplane instance learns how much of its memory the heap may use only
+ * after the application has initialized, long after sgen_memgov_init read
+ * MONO_GC_PARAMS, so the soft limit can be set again then.
+ */
+void
+sgen_memgov_set_soft_heap_limit (size_t soft_limit)
+{
+	soft_heap_limit = soft_limit;
+}
+#endif
+
 void
 sgen_memgov_init (size_t max_heap, size_t soft_limit, gboolean debug_allowance, double allowance_ratio, double save_target)
 {

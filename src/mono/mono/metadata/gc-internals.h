@@ -324,6 +324,10 @@ void mono_gc_get_gcmemoryinfo (
 	gint64 *heap_size_bytes,
 	gint64 *fragmented_bytes);
 
+#ifdef HOST_WASI
+void mono_gc_set_soft_heap_limit (guint64 soft_limit);
+#endif
+
 void mono_gc_get_gctimeinfo (
 	guint64 *time_last_gc_100ns,
 	guint64 *time_since_last_gc_100ns,
