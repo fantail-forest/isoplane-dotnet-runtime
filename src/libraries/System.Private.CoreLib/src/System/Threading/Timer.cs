@@ -182,7 +182,9 @@ namespace System.Threading
         {
             // We fire the first timer on this thread; any other timers that need to be fired
             // are queued to the ThreadPool.
+#if !TARGET_WASI
             TimerQueueTimer? timerToFireOnThisThread = null;
+#endif
 
             lock (SharedLock)
             {
@@ -257,6 +259,9 @@ namespace System.Threading
                                 DeleteTimer(timer);
                             }
 
+#if TARGET_WASI
+                            ThreadPool.UnsafeQueueUserWorkItemInternal(timer, preferLocal: false);
+#else
                             // If this is the first timer, we'll fire it on this thread (after processing
                             // all others). Otherwise, queue it to the ThreadPool.
                             if (timerToFireOnThisThread == null)
@@ -267,6 +272,7 @@ namespace System.Threading
                             {
                                 ThreadPool.UnsafeQueueUserWorkItemInternal(timer, preferLocal: false);
                             }
+#endif
                         }
                         else
                         {
@@ -331,7 +337,9 @@ namespace System.Threading
             }
 
             // Fire the user timer outside of the lock!
+#if !TARGET_WASI
             timerToFireOnThisThread?.Fire();
+#endif
         }
 
         #endregion
@@ -577,13 +585,7 @@ namespace System.Threading
                 }
             }
 
-#if TARGET_WASI
-            // Outside the queue's lock: the observer logs.
-            if (success && dueTime != Timeout.UnsignedInfinite && period != Timeout.UnsignedInfinite)
-            {
-                Timer.s_isoplanePeriodicTimerScheduled?.Invoke(_timerCallback, period);
-            }
-#endif
+
 
             return success;
         }
@@ -849,9 +851,6 @@ namespace System.Threading
         /// <remarks>Called once per activation by the Isoplane SDK through UnsafeAccessor.</remarks>
         internal static void ShiftForIsoplaneActivation(long elapsedMs) => TimerQueue.ShiftScheduledTimers(elapsedMs);
 
-        /// <summary>Told of each periodic timer as it is scheduled: its callback and its period in milliseconds.</summary>
-        /// <remarks>Set by the Isoplane SDK through UnsafeAccessor, to tell a developer what running their timers between requests costs.</remarks>
-        internal static Action<Delegate, uint>? s_isoplanePeriodicTimerScheduled;
 #endif
 
         internal const uint MaxSupportedTimeout = 0xfffffffe;
