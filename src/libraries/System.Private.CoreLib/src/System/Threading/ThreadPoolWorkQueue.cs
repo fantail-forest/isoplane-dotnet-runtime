@@ -944,10 +944,10 @@ namespace System.Threading
         // recorded in the execution context it runs under; one for a dispatch
         // other than the current one waits until that dispatch's next slice,
         // so a slice runs only its own dispatch's code. Work that carries no
-        // open dispatch belongs to the instance and runs in any slice.
+        // open dispatch belongs to the instance and waits for an instance slice.
         internal static readonly AsyncLocal<long> s_isoplaneDispatch = new AsyncLocal<long>();
         // Open dispatches, each with the work waiting for its next slice.
-        private static readonly Dictionary<long, Queue<object>?> s_isoplaneWaiting = new Dictionary<long, Queue<object>?>();
+        private static readonly Dictionary<long, Queue<object>?> s_isoplaneWaiting = new Dictionary<long, Queue<object>?> { [0] = null };
         private static long s_isoplaneCurrent;
 
         internal static void IsoplaneOpen(long dispatch) => s_isoplaneWaiting[dispatch] = null;
@@ -965,7 +965,8 @@ namespace System.Threading
         }
 
         internal static bool IsoplaneHasWaiting(long dispatch) =>
-            s_isoplaneWaiting.TryGetValue(dispatch, out Queue<object>? waiting) && waiting is { Count: > 0 };
+            (dispatch == s_isoplaneCurrent && ThreadPool.PendingWorkItemCount > 0) ||
+            (s_isoplaneWaiting.TryGetValue(dispatch, out Queue<object>? waiting) && waiting is { Count: > 0 });
 
         /// <summary>Closes <paramref name="dispatch"/>: what waited for it becomes instance work.</summary>
         internal static void IsoplaneClose(long dispatch)
@@ -981,8 +982,6 @@ namespace System.Threading
 
         private static bool IsoplaneDefers(object workItem)
         {
-            if (s_isoplaneWaiting.Count == 0)
-                return false;
             ExecutionContext? context = workItem switch
             {
                 Task task => task.IsoplaneExecutionContext,
@@ -991,10 +990,11 @@ namespace System.Threading
                 TimerQueueTimer timer => timer.IsoplaneExecutionContext,
                 _ => null,
             };
-            if (context is null || !context.TryGetLocalValue(s_isoplaneDispatch, out object? value) || value is not long dispatch)
+            long dispatch = context is not null && context.TryGetLocalValue(s_isoplaneDispatch, out object? value)
+                && value is long owner && s_isoplaneWaiting.ContainsKey(owner) ? owner : 0;
+            if (dispatch == s_isoplaneCurrent)
                 return false;
-            if (dispatch == 0 || dispatch == s_isoplaneCurrent || !s_isoplaneWaiting.TryGetValue(dispatch, out Queue<object>? waiting))
-                return false;
+            s_isoplaneWaiting.TryGetValue(dispatch, out Queue<object>? waiting);
             (waiting ??= new Queue<object>()).Enqueue(workItem);
             s_isoplaneWaiting[dispatch] = waiting;
             return true;
@@ -1063,6 +1063,9 @@ namespace System.Threading
             // Save the start time
             //
             int startTickCount = Environment.TickCount;
+#if TARGET_WASI
+            int remainingWorkItems = 64;
+#endif
 
             //
             // Loop until our quantum expires or there is no work.
@@ -1097,6 +1100,13 @@ namespace System.Threading
                     }
                 }
 
+#if TARGET_WASI
+                if (IsoplaneDefers(workItem))
+                {
+                    workItem = null;
+                    continue;
+                }
+#endif
                 if (workQueue._loggingEnabled && FrameworkEventSource.Log.IsEnabled())
                 {
                     FrameworkEventSource.Log.ThreadPoolDequeueWorkObject(workItem);
@@ -1152,6 +1162,11 @@ namespace System.Threading
                     return false;
                 }
 
+#if TARGET_WASI
+                // The host freezes the guest clock during a slice.
+                if (--remainingWorkItems == 0)
+                    return true;
+#endif
                 // Check if the dispatch quantum has expired
                 if ((uint)(currentTickCount - startTickCount) < DispatchQuantumMs)
                 {

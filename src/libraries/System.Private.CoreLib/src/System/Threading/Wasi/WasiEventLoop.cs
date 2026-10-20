@@ -32,7 +32,7 @@ namespace System.Threading
         internal static void RunOnceHostDriven()
         {
             s_hostDriven = true;
-            ScheduleCheck();
+            CheckPollables(null);
             ThreadPoolWorkQueue.Dispatch();
         }
 
@@ -112,7 +112,7 @@ namespace System.Threading
 
         internal static void ScheduleCheck()
         {
-            if (!s_checkScheduled && (s_pollables.Count > 0 || s_hooks.Count > 0))
+            if (!s_hostDriven && !s_checkScheduled && (s_pollables.Count > 0 || s_hooks.Count > 0))
             {
                 s_checkScheduled = true;
                 ThreadPool.UnsafeQueueUserWorkItem(CheckPollables, null);
@@ -236,7 +236,7 @@ namespace System.Threading
 
                 // this means that taskCompletionSource.Task.AsyncState -> this;
                 // which means PollableHolder will be alive until the Task alive
-                taskCompletionSource = new TaskCompletionSource(this);
+                taskCompletionSource = new TaskCompletionSource(this, TaskCreationOptions.RunContinuationsAsynchronously);
 
                 // static method is used to avoid allocating a delegate
                 cancellationTokenRegistration = cancellationToken.Register(CancelAndDispose, this);
@@ -284,6 +284,8 @@ namespace System.Threading
             public readonly Func<object?, IList<int>> BeforePollHook;
             public readonly Action<object?> OnResolveCallback;
             public readonly CancellationTokenRegistration cancellationTokenRegistration;
+            private readonly ExecutionContext? _context = ExecutionContext.Capture();
+            private bool _resolveQueued;
 
             public PollHook(object? state, Func<object?, IList<int>> beforePollHook, Action<object?> onResolveCallback, CancellationToken cancellationToken)
             {
@@ -297,8 +299,20 @@ namespace System.Threading
 
             public void Resolve()
             {
-                OnResolveCallback(State);
+                if (_resolveQueued) return;
+                _resolveQueued = true;
+                if (_context is { } context)
+                    ExecutionContext.Run(context, static state => ((PollHook)state!).QueueResolve(), this);
+                else
+                    QueueResolve();
             }
+
+            private void QueueResolve() => ThreadPool.QueueUserWorkItem(static state =>
+            {
+                var hook = (PollHook)state!;
+                hook._resolveQueued = false;
+                if (!hook.isDisposed) hook.OnResolveCallback(hook.State);
+            }, this);
 
             public static void Dispose(object? s)
             {
