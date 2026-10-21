@@ -1621,6 +1621,8 @@ namespace System.Threading.Tasks
             (m_stateFlags & (int)TaskStateFlags.Faulted) != 0;
 
 #if TARGET_WASI
+        internal readonly long IsoplaneOwner = ThreadPoolWorkQueue.IsoplaneCaptureOwner();
+
         /// <summary>
         /// The context the task runs under from the thread pool: an async state
         /// machine box keeps its own in its state object field.
