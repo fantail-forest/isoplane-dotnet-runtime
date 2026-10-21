@@ -44,6 +44,7 @@ namespace System.Threading
         /// <summary>Mapping from a tick count to a time to use when debugging to translate tick count values.</summary>
         internal static readonly (long TickCount, DateTime Time) s_tickCountToTimeMap = (TickCount64, DateTime.UtcNow);
 
+#if !TARGET_WASI
         public static TimerQueue[] Instances { get; } = CreateTimerQueues();
 
         private static TimerQueue[] CreateTimerQueues()
@@ -55,6 +56,8 @@ namespace System.Threading
             }
             return queues;
         }
+
+#endif
 
         // This method is not thread-safe and should only be used from the debugger.
         private int CountForDebugger
@@ -468,7 +471,11 @@ namespace System.Threading
     internal sealed class TimerQueueTimer : ITimer, IThreadPoolWorkItem
     {
         // The associated timer queue.
+#if TARGET_WASI
+        internal TimerQueue _associatedTimerQueue;
+#else
         private readonly TimerQueue _associatedTimerQueue;
+#endif
 
         // All mutable fields of this class are protected by a lock on _associatedTimerQueue.
         // The first six fields are maintained by TimerQueue.
@@ -531,7 +538,11 @@ namespace System.Threading
             {
                 _executionContext = ExecutionContext.Capture();
             }
+#if TARGET_WASI
+            _associatedTimerQueue = TimerQueue.ForOwner(IsoplaneOwner);
+#else
             _associatedTimerQueue = TimerQueue.Instances[(uint)Thread.GetCurrentProcessorId() % TimerQueue.Instances.Length];
+#endif
 
             // After the following statement, the timer may fire.  No more manipulation of timer state outside of
             // the lock is permitted beyond this point!
@@ -561,6 +572,10 @@ namespace System.Threading
 
         internal bool Change(uint dueTime, uint period)
         {
+#if TARGET_WASI
+            if (_associatedTimerQueue.IsClosed)
+                _associatedTimerQueue = TimerQueue.ForOwner(0);
+#endif
             bool success;
 
             lock (_associatedTimerQueue.SharedLock)

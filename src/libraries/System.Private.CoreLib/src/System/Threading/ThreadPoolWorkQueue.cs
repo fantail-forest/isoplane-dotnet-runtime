@@ -967,6 +967,7 @@ namespace System.Threading
         /// <summary>Closes <paramref name="dispatch"/>: what waited for it becomes instance work.</summary>
         internal static void IsoplaneClose(long dispatch)
         {
+            TimerQueue.CloseOwner(dispatch);
             if (s_isoplaneCurrent == dispatch)
                 s_isoplaneCurrent = 0;
             if (s_isoplaneWaiting.Remove(dispatch, out Queue<object>? waiting) && waiting is not null)
@@ -975,6 +976,8 @@ namespace System.Threading
                     ThreadPool.s_workQueue.Enqueue(workItem, forceGlobal: true);
             }
         }
+
+        internal static long IsoplaneResolveOwner(long owner) => s_isoplaneWaiting.ContainsKey(owner) ? owner : 0;
 
         internal static long IsoplaneCaptureOwner()
         {
@@ -1005,6 +1008,9 @@ namespace System.Threading
                 case AwaitTaskContinuation continuation:
                     owner = IsoplaneContextOwner(continuation.IsoplaneExecutionContext, continuation.IsoplaneOwner);
                     break;
+                case TimerQueue queue:
+                    owner = queue.IsoplaneOwner;
+                    break;
                 case TimerQueueTimer timer:
                     owner = timer.IsoplaneOwner;
                     break;
@@ -1017,7 +1023,7 @@ namespace System.Threading
                     owner = queued.Owner;
                     break;
             }
-            long dispatch = s_isoplaneWaiting.ContainsKey(owner) ? owner : 0;
+            long dispatch = IsoplaneResolveOwner(owner);
             if (dispatch == s_isoplaneCurrent)
                 return false;
             s_isoplaneWaiting.TryGetValue(dispatch, out Queue<object>? waiting);

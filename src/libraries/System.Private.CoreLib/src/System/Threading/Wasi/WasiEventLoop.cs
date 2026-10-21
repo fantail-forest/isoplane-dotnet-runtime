@@ -55,6 +55,12 @@ namespace System.Threading
             return holder.taskCompletionSource.Task;
         }
 
+        internal static void RegisterWasiTimer(Pollable pollable, TimerQueue queue, CancellationToken cancellationToken)
+        {
+            s_pollables.Add(new PollableHolder(pollable, true, cancellationToken, queue));
+            ScheduleCheck();
+        }
+
         internal static void RegisterWasiPollHook(object? state, Func<object?, IList<int>> beforePollHook, Action<object?> onResolveCallback, CancellationToken cancellationToken)
         {
             // this will register the poll hook into s_hooks
@@ -228,8 +234,11 @@ namespace System.Threading
             public readonly CancellationTokenRegistration cancellationTokenRegistration;
             public readonly CancellationToken cancellationToken;
 
-            public PollableHolder(Pollable pollable, bool ownsPollable, CancellationToken cancellationToken)
+            private readonly TimerQueue? _timerQueue;
+
+            public PollableHolder(Pollable pollable, bool ownsPollable, CancellationToken cancellationToken, TimerQueue? timerQueue = null)
             {
+                _timerQueue = timerQueue;
                 this.pollable = pollable;
                 this.ownsPollable = ownsPollable;
                 this.cancellationToken = cancellationToken;
@@ -256,6 +265,7 @@ namespace System.Threading
                 }
                 cancellationTokenRegistration.Dispose();
                 taskCompletionSource.TrySetResult();
+                _timerQueue?.QueueDriver();
             }
 
             // for GC of abandoned Tasks or for cancellation
