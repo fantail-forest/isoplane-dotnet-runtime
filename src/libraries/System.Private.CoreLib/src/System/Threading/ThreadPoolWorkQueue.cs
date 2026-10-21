@@ -622,7 +622,7 @@ namespace System.Threading
         {
             Debug.Assert((callback is IThreadPoolWorkItem) ^ (callback is Task));
 #if TARGET_WASI
-            if (IsoplaneDefers(callback))
+            if (IsoplaneDefers(ref callback))
                 return;
 #endif
 
@@ -695,7 +695,7 @@ namespace System.Threading
         {
             Debug.Assert((workItem is IThreadPoolWorkItem) ^ (workItem is Task));
 #if TARGET_WASI
-            if (IsoplaneDefers(workItem))
+            if (IsoplaneDefers(ref workItem))
                 return;
 #endif
 
@@ -939,12 +939,8 @@ namespace System.Threading
         /// <c>false</c> if this thread stopped working early.
         /// </returns>
 #if TARGET_WASI
-        // Isoplane runs several dispatches on one instance and gives each its
-        // own slices of the one thread. A work item belongs to the dispatch
-        // recorded in the execution context it runs under; one for a dispatch
-        // other than the current one waits until that dispatch's next slice,
-        // so a slice runs only its own dispatch's code. Work that carries no
-        // open dispatch belongs to the instance and waits for an instance slice.
+        // Ownership survives suppressed ExecutionContext flow and transfers to
+        // the instance when its dispatch closes.
         internal static readonly AsyncLocal<long> s_isoplaneDispatch = new AsyncLocal<long>();
         // Open dispatches, each with the work waiting for its next slice.
         private static readonly Dictionary<long, Queue<object>?> s_isoplaneWaiting = new Dictionary<long, Queue<object>?> { [0] = null };
@@ -980,18 +976,48 @@ namespace System.Threading
             }
         }
 
-        private static bool IsoplaneDefers(object workItem)
+        internal static long IsoplaneCaptureOwner()
         {
-            ExecutionContext? context = workItem switch
+            long owner = s_isoplaneDispatch.Value;
+            return owner != 0 ? owner : s_isoplaneCurrent;
+        }
+
+        private sealed class IsoplaneWorkItem : IThreadPoolWorkItem
+        {
+            internal readonly long Owner = IsoplaneCaptureOwner();
+            private readonly IThreadPoolWorkItem _workItem;
+
+            internal IsoplaneWorkItem(IThreadPoolWorkItem workItem) => _workItem = workItem;
+            public void Execute() => _workItem.Execute();
+        }
+
+        private static bool IsoplaneDefers(ref object workItem)
+        {
+            long owner;
+            switch (workItem)
             {
-                Task task => task.IsoplaneExecutionContext,
-                QueueUserWorkItemCallbackBase callback => callback.IsoplaneExecutionContext,
-                AwaitTaskContinuation continuation => continuation.IsoplaneExecutionContext,
-                TimerQueueTimer timer => timer.IsoplaneExecutionContext,
-                _ => null,
-            };
-            long dispatch = context is not null && context.TryGetLocalValue(s_isoplaneDispatch, out object? value)
-                && value is long owner && s_isoplaneWaiting.ContainsKey(owner) ? owner : 0;
+                case Task task:
+                    owner = IsoplaneContextOwner(task.IsoplaneExecutionContext, task.IsoplaneOwner);
+                    break;
+                case QueueUserWorkItemCallbackBase callback:
+                    owner = callback.IsoplaneOwner;
+                    break;
+                case AwaitTaskContinuation continuation:
+                    owner = IsoplaneContextOwner(continuation.IsoplaneExecutionContext, continuation.IsoplaneOwner);
+                    break;
+                case TimerQueueTimer timer:
+                    owner = timer.IsoplaneOwner;
+                    break;
+                case IsoplaneWorkItem captured:
+                    owner = captured.Owner;
+                    break;
+                default:
+                    var queued = new IsoplaneWorkItem((IThreadPoolWorkItem)workItem);
+                    workItem = queued;
+                    owner = queued.Owner;
+                    break;
+            }
+            long dispatch = s_isoplaneWaiting.ContainsKey(owner) ? owner : 0;
             if (dispatch == s_isoplaneCurrent)
                 return false;
             s_isoplaneWaiting.TryGetValue(dispatch, out Queue<object>? waiting);
@@ -999,6 +1025,11 @@ namespace System.Threading
             s_isoplaneWaiting[dispatch] = waiting;
             return true;
         }
+
+        private static long IsoplaneContextOwner(ExecutionContext? context, long fallback) =>
+            context is not null && context.TryGetLocalValue(s_isoplaneDispatch, out object? value)
+                && value is long owner ? owner : fallback;
+
 #endif
 
         internal static bool Dispatch()
@@ -1101,7 +1132,7 @@ namespace System.Threading
                 }
 
 #if TARGET_WASI
-                if (IsoplaneDefers(workItem))
+                if (IsoplaneDefers(ref workItem))
                 {
                     workItem = null;
                     continue;
@@ -1408,7 +1439,7 @@ namespace System.Threading
     internal abstract class QueueUserWorkItemCallbackBase : IThreadPoolWorkItem
     {
 #if TARGET_WASI
-        internal virtual ExecutionContext? IsoplaneExecutionContext => null;
+        internal readonly long IsoplaneOwner = ThreadPoolWorkQueue.IsoplaneCaptureOwner();
 #endif
 
 #if DEBUG
@@ -1445,10 +1476,6 @@ namespace System.Threading
             callback(quwi._state);
         };
 
-#if TARGET_WASI
-        internal override ExecutionContext? IsoplaneExecutionContext => _context;
-#endif
-
         internal QueueUserWorkItemCallback(WaitCallback callback, object? state, ExecutionContext context)
         {
             Debug.Assert(context != null);
@@ -1471,10 +1498,6 @@ namespace System.Threading
         private Action<TState>? _callback; // SOS's ThreadPool command depends on this name
         private readonly TState _state;
         private readonly ExecutionContext _context;
-
-#if TARGET_WASI
-        internal override ExecutionContext? IsoplaneExecutionContext => _context;
-#endif
 
         internal QueueUserWorkItemCallback(Action<TState> callback, TState state, ExecutionContext context)
         {

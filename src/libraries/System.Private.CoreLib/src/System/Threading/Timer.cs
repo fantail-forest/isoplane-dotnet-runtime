@@ -494,7 +494,7 @@ namespace System.Threading
         private readonly object? _state;
         private readonly ExecutionContext? _executionContext;
 #if TARGET_WASI
-        internal ExecutionContext? IsoplaneExecutionContext => _executionContext;
+        internal readonly long IsoplaneOwner = ThreadPoolWorkQueue.IsoplaneCaptureOwner();
 #endif
 
         // When Timer.Dispose(WaitHandle) is used, we need to signal the wait handle only

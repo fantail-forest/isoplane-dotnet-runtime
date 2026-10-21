@@ -527,6 +527,8 @@ namespace System.Threading.Tasks
         protected int m_continuationId;
 
 #if TARGET_WASI
+        internal readonly long IsoplaneOwner = ThreadPoolWorkQueue.IsoplaneCaptureOwner();
+
         internal ExecutionContext? IsoplaneExecutionContext => m_capturedContext;
 #endif
 
