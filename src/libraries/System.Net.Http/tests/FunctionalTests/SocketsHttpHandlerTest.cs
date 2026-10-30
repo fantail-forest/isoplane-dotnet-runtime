@@ -27,6 +27,21 @@ namespace System.Net.Http.Functional.Tests
 {
     using Configuration = System.Net.Test.Common.Configuration;
 
+    internal static class SocketsHttpHandlerTestExtensions
+    {
+        internal static int GetInitialHttp2MaxConcurrentStreams(this SocketsHttpHandler handler) =>
+            GetInitialHttp2MaxConcurrentStreamsCore(handler);
+
+        internal static void SetInitialHttp2MaxConcurrentStreams(this SocketsHttpHandler handler, int value) =>
+            SetInitialHttp2MaxConcurrentStreamsCore(handler, value);
+
+        [UnsafeAccessor(UnsafeAccessorKind.Method, Name = "get_InitialHttp2MaxConcurrentStreams")]
+        private static extern int GetInitialHttp2MaxConcurrentStreamsCore(SocketsHttpHandler handler);
+
+        [UnsafeAccessor(UnsafeAccessorKind.Method, Name = "set_InitialHttp2MaxConcurrentStreams")]
+        private static extern void SetInitialHttp2MaxConcurrentStreamsCore(SocketsHttpHandler handler, int value);
+    }
+
     public class CertificateSetup : IDisposable
     {
         public X509Certificate2 ServerCert => _pkiHolder.EndEntity;
@@ -2645,6 +2660,34 @@ namespace System.Net.Http.Functional.Tests
         }
 
         [Theory]
+        [InlineData(1)]
+        [InlineData(42)]
+        [InlineData(int.MaxValue)]
+        public void InitialHttp2MaxConcurrentStreams_GetSet_Roundtrips(int value)
+        {
+            using var handler = new SocketsHttpHandler();
+            Assert.Equal(100, handler.GetInitialHttp2MaxConcurrentStreams()); // default value
+
+            handler.SetInitialHttp2MaxConcurrentStreams(value);
+            Assert.Equal(value, handler.GetInitialHttp2MaxConcurrentStreams());
+
+            handler.SetInitialHttp2MaxConcurrentStreams(100);
+            Assert.Equal(100, handler.GetInitialHttp2MaxConcurrentStreams());
+        }
+
+        [Theory]
+        [InlineData(0)]
+        [InlineData(-1)]
+        [InlineData(-42)]
+        [InlineData(int.MinValue)]
+        public void InitialHttp2MaxConcurrentStreams_InvalidValue_ThrowsArgumentOutOfRangeException(int value)
+        {
+            using var handler = new SocketsHttpHandler();
+            Assert.Throws<ArgumentOutOfRangeException>(() => handler.SetInitialHttp2MaxConcurrentStreams(value));
+            Assert.Equal(100, handler.GetInitialHttp2MaxConcurrentStreams());
+        }
+
+        [Theory]
         [InlineData(false)]
         [InlineData(true)]
         public async Task AfterDisposeSendAsync_GettersUsable_SettersThrow(bool dispose)
@@ -2687,6 +2730,7 @@ namespace System.Net.Http.Functional.Tests
                 Assert.Null(handler.ConnectCallback);
                 Assert.Null(handler.PlaintextStreamFilter);
                 Assert.Equal(HttpClientHandlerTestBase.DefaultInitialWindowSize, handler.InitialHttp2StreamWindowSize);
+                Assert.Equal(100, handler.GetInitialHttp2MaxConcurrentStreams());
 
                 Assert.Throws(expectedExceptionType, () => handler.AllowAutoRedirect = false);
                 Assert.Throws(expectedExceptionType, () => handler.AutomaticDecompression = DecompressionMethods.GZip);
@@ -2709,6 +2753,7 @@ namespace System.Net.Http.Functional.Tests
                 Assert.Throws(expectedExceptionType, () => handler.ConnectCallback = (context, token) => default);
                 Assert.Throws(expectedExceptionType, () => handler.PlaintextStreamFilter = (context, token) => default);
                 Assert.Throws(expectedExceptionType, () => handler.InitialHttp2StreamWindowSize = 128 * 1024);
+                Assert.Throws(expectedExceptionType, () => handler.SetInitialHttp2MaxConcurrentStreams(1));
             }
         }
     }
@@ -3012,6 +3057,232 @@ namespace System.Net.Http.Functional.Tests
 
                 await VerifySendTasks(sendTasks0).ConfigureAwait(false);
                 await VerifySendTasks(sendTasks2).ConfigureAwait(false);
+            }
+        }
+
+        [ConditionalTheory(typeof(SocketsHttpHandlerTest_Http2), nameof(SupportsAlpn))]
+        [InlineData(1)]
+        [InlineData(3)]
+        public async Task InitialHttp2MaxConcurrentStreams_LimitsStreamsUsedBeforeSettingsFrameIsReceived(int initialLimit)
+        {
+            const int RequestCount = 5;
+
+            using Http2LoopbackServer server = Http2LoopbackServer.CreateServer();
+
+            using SocketsHttpHandler handler = CreateHandler();
+            handler.EnableMultipleHttp2Connections = false;
+            handler.SetInitialHttp2MaxConcurrentStreams(initialLimit);
+            using HttpClient client = CreateHttpClient(handler);
+
+            var sendTasks = new List<Task<HttpResponseMessage>>();
+            AcquireAllStreamSlots(server, client, sendTasks, RequestCount);
+
+            await using Http2LoopbackConnection connection = await server.AcceptConnectionAsync().WaitAsync(TestHelper.PassingTestTimeout);
+
+            // Read the client's SETTINGS frame, but don't send ours yet.
+            await connection.ReadSettingsAsync().WaitAsync(TestHelper.PassingTestTimeout);
+
+            // Only 'initialLimit' requests may be sent before we advertise our own limit.
+            var streamIds = new List<int>(await AcceptRequests(connection, initialLimit));
+            await AssertNoRequestHeadersSentAsync(connection);
+
+            // Advertise a higher limit. The remaining requests should now be sent.
+            await connection.SendSettingsAsync(ackTimeout: null, [new SettingsEntry { SettingId = SettingId.MaxConcurrentStreams, Value = 100 }]);
+
+            streamIds.AddRange(await AcceptRequests(connection, RequestCount - initialLimit));
+
+            await SendResponses(connection, streamIds);
+            await VerifySendTasks(sendTasks);
+        }
+
+        private static async Task AssertNoRequestHeadersSentAsync(Http2LoopbackConnection connection)
+        {
+            using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(100));
+
+            while (true)
+            {
+                Frame frame;
+                try
+                {
+                    frame = await connection.ReadFrameAsync(cts.Token).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException)
+                {
+                    return;
+                }
+
+                Assert.NotNull(frame);
+                Assert.NotEqual(FrameType.Headers, frame.Type);
+            }
+        }
+
+        [ConditionalFact(typeof(SocketsHttpHandlerTest_Http2), nameof(SupportsAlpn))]
+        public async Task Http2_SettingInFlightLimitExceeded()
+        {
+            // test that client abort connection when server send too much PING/SETTINGs while not processing ACK replies
+
+            await Http2LoopbackServer.CreateClientAndServerAsync(
+                async uri =>
+                {
+                    using HttpClient client = CreateHttpClient();
+
+                    Exception e = await Assert.ThrowsAsync<HttpRequestException>(() => client.GetAsync(uri));
+                    Assert.True(e.Message.StartsWith(SR.net_http_http2_frame_limit_exceeded), "Bad Exception Message");
+
+                    // test that we can open connection after failure
+                    await client.GetAsync(uri);
+                },
+                async server =>
+                {
+                    server.AllowMultipleConnections = true;
+
+                    await using Http2LoopbackConnection con = await server.AcceptConnectionAsync();
+                    while (true)
+                    {
+                        try
+                        {
+                            await con.WriteFrameAsync(new Frame(0, FrameType.Settings, FrameFlags.None, 0));
+                        }
+                        catch (IOException)
+                        {
+                            break;
+                        }
+                    }
+
+                    // second connection will be more lucky
+                    await server.AcceptConnectionSendResponseAndCloseAsync(HttpStatusCode.OK, "ok");
+                });
+        }
+
+        [ConditionalFact(typeof(SocketsHttpHandlerTest_Http2), nameof(SupportsAlpn))]
+        public async Task Http2_PingInFlightLimitExceeded()
+        {
+            // almost exhaust client queue and test that following asynchronous PING issued by client trips
+
+            BlockedWriteNetworkStream? clientNetStream = null;
+
+            await Http2LoopbackServer.CreateClientAndServerAsync(
+                async uri =>
+                {
+                    using HttpClientHandler handler = CreateHttpClientHandler(allowAllCertificates: true);
+                    SocketsHttpHandler socketsHandler = GetUnderlyingSocketsHttpHandler(handler);
+
+                    socketsHandler.ConnectCallback += async (ctx, ct) =>
+                    {
+                        DnsEndPoint dnsEndPoint = ctx.DnsEndPoint;
+                        IPAddress[] addresses = await Dns.GetHostAddressesAsync(dnsEndPoint.Host, dnsEndPoint.AddressFamily, ct);
+
+                        var s = new Socket(SocketType.Stream, ProtocolType.Tcp);
+                        await s.ConnectAsync(addresses, dnsEndPoint.Port, ct);
+
+                        clientNetStream = new BlockedWriteNetworkStream(s, true);
+                        return clientNetStream;
+                    };
+                    socketsHandler.KeepAlivePingDelay = TimeSpan.FromSeconds(1);
+                    socketsHandler.KeepAlivePingPolicy = HttpKeepAlivePingPolicy.Always;
+                    socketsHandler.KeepAlivePingTimeout = TimeSpan.MaxValue;
+
+                    using HttpClient client = CreateHttpClient(handler);
+                    client.DefaultRequestVersion = HttpVersion.Version20;
+                    client.DefaultVersionPolicy = HttpVersionPolicy.RequestVersionExact;
+
+                    Exception e = await Assert.ThrowsAsync<HttpRequestException>(() => client.GetAsync(uri));
+                    Assert.True(e.Message.StartsWith(SR.net_http_http2_frame_limit_exceeded), "Bad Exception Message");
+
+                    // test that we can connect new connection after fail
+                    await client.GetAsync(uri);
+                },
+                async server =>
+                {
+                    server.AllowMultipleConnections = true;
+
+                    await using Http2LoopbackConnection con = await server.AcceptConnectionAsync();
+
+                    // wait for initial frames from client
+                    await con.ReadSettingsAsync();
+                    await con.ReadRequestHeaderAsync();
+                    PingFrame firstPing = await con.ReadPingAsync();
+
+                    long writeCntBeforeSettingsAck = clientNetStream.StartBlocking();
+
+                    // ACK for following SETTINGS will attemp flushing queue on client side and block its processing
+                    await con.WriteFrameAsync(new SettingsFrame());
+
+                    // wait before client attemp to send ACK and channel get blocked.
+                    // Without this wait it may combine SETTINGs ACK and following PING ACKs into
+                    // single buffer which will cause dequeueing them from queue and we fail to
+                    // preload queue to expect 1000 entries as required by test later.
+                    while (clientNetStream.WriteCallCount == writeCntBeforeSettingsAck)
+                    {
+                        await Task.Delay(50);
+                    }
+
+                    // fill the client queue with replies to PING, 1000 exactly fit the queue
+                    for (long i = 0; i < 1000; i++)
+                    {
+                        await con.WriteFrameAsync(new PingFrame(i, FrameFlags.None, 0));
+                    }
+
+                    // now confirm ping we received soon after initiating connection to eneble new heart beat ping
+                    // this should trip and close connection
+                    await con.WriteFrameAsync(new PingFrame(firstPing.Data, FrameFlags.Ack, 0));
+
+                    // test that server/client are operational after failure
+                    await server.AcceptConnectionSendResponseAndCloseAsync();
+                }, new Http2Options()
+                {
+                    UseSsl = false, // SSL introduce buffering which supress effect of blocking
+                    EnableTransparentPingResponse = false // need to observe initial ping
+                });
+        }
+
+        private class BlockedWriteNetworkStream : NetworkStream
+        {
+            private object _lock = new object();
+            private bool _block;
+            private long _writes;
+
+            public long WriteCallCount
+            {
+                get
+                {
+                    lock (_lock)
+                    {
+                        return _writes;
+                    }
+                }
+            }
+
+            public BlockedWriteNetworkStream(Socket socket, bool ownsSocket) : base(socket, ownsSocket) { }
+
+            public long StartBlocking()
+            {
+                lock (_lock)
+                {
+                    _block = true;
+                    return _writes;
+                }
+            }
+
+            public override Task WriteAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken) =>
+                WriteAsync(buffer.AsMemory(offset, count), cancellationToken).AsTask();
+
+            public override async ValueTask WriteAsync(ReadOnlyMemory<byte> buffer, CancellationToken cancellationToken = default)
+            {
+                bool block;
+                lock (_lock)
+                {
+                    _writes++;
+                    block = _block;
+                }
+
+                if (block)
+                {
+                    await Task.Delay(TimeSpan.FromDays(1), cancellationToken);
+                    throw new Exception("Long delay was canceled early");
+                }
+
+                await base.WriteAsync(buffer, cancellationToken);
             }
         }
 

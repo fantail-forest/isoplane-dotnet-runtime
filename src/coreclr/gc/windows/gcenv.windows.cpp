@@ -19,6 +19,8 @@ GCSystemInfo g_SystemInfo;
 
 static bool g_SeLockMemoryPrivilegeAcquired = false;
 
+static uint32_t g_maxProcessorCount = 0;
+
 static AffinitySet g_processAffinitySet;
 
 namespace {
@@ -500,6 +502,14 @@ void GetGroupForProcessor(uint16_t processor_number, uint16_t* group_number, uin
 //  true if it has succeeded, false if it has failed
 bool GCToOSInterface::Initialize()
 {
+    uint16_t maximumProcessorGroupCount = GetMaximumProcessorGroupCount();
+    if (maximumProcessorGroupCount == 0)
+    {
+        return false;
+    }
+
+    g_maxProcessorCount = static_cast<uint32_t>(maximumProcessorGroupCount) * 64;
+
     SYSTEM_INFO systemInfo;
     GetSystemInfo(&systemInfo);
 
@@ -511,6 +521,11 @@ bool GCToOSInterface::Initialize()
 
     InitNumaNodeInfo();
     InitCPUGroupInfo();
+
+    if (!g_processAffinitySet.Initialize(GCToOSInterface::GetMaxProcessorCount()))
+    {
+        return false;
+    }
 
     if (CanEnableGCCPUGroups())
     {
@@ -916,7 +931,7 @@ const AffinitySet* GCToOSInterface::SetGCThreadsAffinitySet(uintptr_t configAffi
         if (!configAffinitySet->IsEmpty())
         {
             // Update the process affinity set using the configured set
-            for (size_t i = 0; i < MAX_SUPPORTED_CPUS; i++)
+            for (size_t i = 0; i < GCToOSInterface::GetTotalProcessorCount(); i++)
             {
                 if (g_processAffinitySet.Contains(i) && !configAffinitySet->Contains(i))
                 {
@@ -1116,6 +1131,12 @@ uint32_t GCToOSInterface::GetTotalProcessorCount()
     }
 }
 
+uint32_t GCToOSInterface::GetMaxProcessorCount()
+{
+    assert(g_maxProcessorCount != 0);
+    return g_maxProcessorCount;
+}
+
 bool GCToOSInterface::CanEnableGCNumaAware()
 {
     return g_fEnableGCNumaAware;
@@ -1186,13 +1207,13 @@ bool GCToOSInterface::GetProcessorForHeap(uint16_t heap_number, uint16_t* proc_n
     // Locate heap_number-th available processor
     uint16_t procIndex = 0;
     size_t cnt = heap_number;
-    for (uint16_t i = 0; i < MAX_SUPPORTED_CPUS; i++)
+    for (uint32_t i = 0; i < GCToOSInterface::GetTotalProcessorCount(); i++)
     {
         if (g_processAffinitySet.Contains(i))
         {
             if (cnt == 0)
             {
-                procIndex = i;
+                procIndex = (uint16_t)i;
                 success = true;
                 break;
             }
