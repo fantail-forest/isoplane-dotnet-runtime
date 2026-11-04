@@ -1,0 +1,35 @@
+name: Isoplane fork checks
+on:
+  push:
+    branches: [codex/release-0.1.0-dotnet-10.0.14-vmr]
+  pull_request:
+    branches: [codex/release-0.1.0-dotnet-10.0.14-vmr]
+  workflow_dispatch:
+permissions:
+  contents: read
+defaults:
+  run:
+    shell: bash
+concurrency:
+  group: isoplane-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  check:
+    name: WASI Mono and CoreLib build
+    if: github.repository == 'fantail-forest/isoplane-dotnet-runtime'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      DOTNET_CLI_TELEMETRY_OPTOUT: '1'
+      DOTNET_CLI_USE_MSBUILD_SERVER: '0'
+      CMAKE_BUILD_PARALLEL_LEVEL: '2'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with: {persist-credentials: false}
+      - name: Install native build dependencies
+        run: sudo ./eng/common/native/install-dependencies.sh linux
+      - name: Compile the WASI interpreter and CoreLib
+        run: ./build.sh -os wasi -subset mono.runtime+mono.corelib -c Release /nodeReuse:false /p:UseSharedCompilation=false
+      - name: Record disk consumption
+        if: always()
+        run: df -h .
