@@ -1,9 +1,9 @@
 name: Isoplane fork checks
 on:
   push:
-    branches: [codex/release-0.1.0-dotnet-10.0.14-vmr]
+    branches: [isoplane-revisions]
   pull_request:
-    branches: [codex/release-0.1.0-dotnet-10.0.14-vmr]
+    branches: [isoplane-revisions]
   workflow_dispatch:
 permissions:
   contents: read
