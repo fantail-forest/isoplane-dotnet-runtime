@@ -15,21 +15,113 @@ concurrency:
   cancel-in-progress: true
 jobs:
   check:
-    name: WASI Mono and CoreLib build
+    name: WASI runtime and compiler feed
     if: github.repository == 'fantail-forest/isoplane-dotnet-runtime'
     runs-on: ubuntu-24.04
-    timeout-minutes: 120
+    timeout-minutes: 240
     env:
       DOTNET_CLI_TELEMETRY_OPTOUT: '1'
       DOTNET_CLI_USE_MSBUILD_SERVER: '0'
       CMAKE_BUILD_PARALLEL_LEVEL: '2'
+      ISOPLANE_RUNTIME_INPUTS: ${{ github.sha }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with: {persist-credentials: false}
+      - name: Read pinned dependencies
+        id: inputs
+        run: |
+          source eng/isoplane/manifest.env
+          echo "icu=$ICU_REVISION" >> "$GITHUB_OUTPUT"
+          {
+            echo "ISOPLANE_RUNTIME_WORK=$RUNNER_TEMP/runtime-work"
+            echo "ISOPLANE_RUNTIME_OUTPUT=$RUNNER_TEMP/runtime-output"
+            echo "WASI_SDK_PATH=$RUNNER_TEMP/wasi-sdk"
+          } >> "$GITHUB_ENV"
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: dotnet/icu
+          ref: ${{ steps.inputs.outputs.icu }}
+          path: dependencies/icu
+          persist-credentials: false
       - name: Install native build dependencies
         run: sudo ./eng/common/native/install-dependencies.sh linux
-      - name: Compile the WASI interpreter and CoreLib
-        run: ./build.sh -os wasi -subset mono.runtime+mono.corelib -c Release /nodeReuse:false /p:UseSharedCompilation=false
+      - name: Install the pinned WASI SDK
+        run: |
+          source eng/isoplane/manifest.env
+          curl --fail --location --retry 3 "$WASI_SDK_URL" -o "$RUNNER_TEMP/wasi-sdk.tar.gz"
+          printf '%s  %s\n' "$WASI_SDK_SHA256" "$RUNNER_TEMP/wasi-sdk.tar.gz" | sha256sum --check
+          mkdir -p "$WASI_SDK_PATH"
+          tar --strip-components=1 -xzf "$RUNNER_TEMP/wasi-sdk.tar.gz" -C "$WASI_SDK_PATH"
+          rm "$RUNNER_TEMP/wasi-sdk.tar.gz"
+          echo "$WASI_SDK_VERSION" > "$WASI_SDK_PATH/wasi-sdk-version.txt"
+          touch "$WASI_SDK_PATH/WASI-SDK-VERSION-$WASI_SDK_VERSION"
+      - name: Download the pinned OpenSSL libraries
+        run: |
+          source eng/isoplane/manifest.env
+          url="https://github.com/fantail-forest/isoplane-openssl/releases/download/isoplane-wasi-$OPENSSL_REVISION"
+          mkdir -p "$RUNNER_TEMP/openssl-download" "$ISOPLANE_RUNTIME_OUTPUT/openssl"
+          cd "$RUNNER_TEMP/openssl-download"
+          curl --fail --location --retry 3 "$url/openssl-wasi.tar.gz" -o openssl-wasi.tar.gz
+          curl --fail --location --retry 3 "$url/SHA256SUMS" -o SHA256SUMS
+          sha256sum --check SHA256SUMS
+          tar -xzf openssl-wasi.tar.gz -C "$ISOPLANE_RUNTIME_OUTPUT/openssl"
+          jq -e --arg revision "$OPENSSL_REVISION" --arg sdk "$WASI_SDK_VERSION" \
+            '.source_revision == $revision and (.wasi_sdk | split("\n")[0]) == $sdk' "$ISOPLANE_RUNTIME_OUTPUT/openssl/source.json"
+      - name: Prepare ICU data and native inputs
+        run: bash eng/isoplane/build-icu.sh dependencies/icu "$ISOPLANE_RUNTIME_WORK" "$ISOPLANE_RUNTIME_OUTPUT"
+      - name: Build the runtime and compiler packages
+        run: bash eng/isoplane/build-runtime.sh runtime feed
+      - name: Package the portable feed
+        run: |
+          mkdir -p "$ISOPLANE_RUNTIME_OUTPUT/feed/licenses"
+          cp LICENSE.TXT THIRD-PARTY-NOTICES.TXT "$ISOPLANE_RUNTIME_OUTPUT/feed/licenses/"
+          cp "$ISOPLANE_RUNTIME_OUTPUT/openssl/LICENSE.txt" "$ISOPLANE_RUNTIME_OUTPUT/feed/licenses/OpenSSL.txt"
+          cp dependencies/icu/LICENSE "$ISOPLANE_RUNTIME_OUTPUT/feed/licenses/ICU.txt"
+          tar -czf runtime-feed.tar.gz -C "$ISOPLANE_RUNTIME_OUTPUT" feed packs
+          sha256sum runtime-feed.tar.gz > SHA256SUMS
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: runtime-feed
+          path: |
+            runtime-feed.tar.gz
+            SHA256SUMS
+          retention-days: 1
+          compression-level: 0
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: failure()
+        with:
+          name: runtime-build-logs
+          path: ${{ env.ISOPLANE_RUNTIME_WORK }}/logs
+          retention-days: 7
       - name: Record disk consumption
         if: always()
         run: df -h .
+
+  publish:
+    needs: check
+    if: github.repository == 'fantail-forest/isoplane-dotnet-runtime' && github.ref == 'refs/heads/isoplane-revisions' && github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with: {name: runtime-feed}
+      - name: Publish the revision-specific runtime feed
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          tag="isoplane-runtime-$GITHUB_SHA"
+          if draft=$(gh release view "$tag" --json isDraft --jq .isDraft 2>/dev/null); then
+            if [ "$draft" = false ]; then
+              echo "Release $tag is already published."
+              exit 0
+            fi
+          else
+            gh release create "$tag" --target "$GITHUB_SHA" --draft --prerelease \
+              --title "Isoplane runtime feed $GITHUB_SHA" \
+              --notes 'Portable Mono runtime and WASI SDK packages built from this revision and its pinned dependencies. Includes original licenses and source identities.'
+          fi
+          gh release upload "$tag" runtime-feed.tar.gz SHA256SUMS --clobber
+          gh release edit "$tag" --draft=false --latest=false
