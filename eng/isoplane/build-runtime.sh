@@ -44,7 +44,9 @@ reset_for_toolchain() {
 
 runtime_version_file="$WORK/pack-version"
 stamp_pack_version() {
-  PACK_VERSION_SUFFIX="$PACK_LABEL-${ISOPLANE_RUNTIME_INPUTS:?Supply the runtime source identity}.$PACK_ITERATION"
+  local identity="${ISOPLANE_RUNTIME_INPUTS:?Supply the runtime source identity}"
+  # NuGet includes the version in its 200-character installed-path check.
+  PACK_VERSION_SUFFIX="$PACK_LABEL-${identity:0:32}.$PACK_ITERATION"
   # Arcade needs a calendar build number for assembly/file versions.
   PACK_BUILD_ID="$(git -C "$RUNTIME" log -1 --format=%cs | tr -d '-').1"
   printf '%s\n' "10.0.$PACK_PATCH-$PACK_VERSION_SUFFIX" > "$1"
