@@ -95,6 +95,12 @@ namespace System.Runtime.CompilerServices
                     TaskScheduler scheduler = TaskScheduler.Current;
                     if (scheduler == TaskScheduler.Default)
                     {
+#if TARGET_WASI
+                        ExecutionContext? context = flowContext ? ExecutionContext.Capture() : null;
+                        ThreadPoolWorkQueue.IsoplaneYield(context == null || context.IsDefault ?
+                            new QueueUserWorkItemCallbackDefaultContext(s_waitCallbackRunAction, continuation) :
+                            (object)new QueueUserWorkItemCallback(s_waitCallbackRunAction, continuation, context));
+#else
                         if (flowContext)
                         {
                             ThreadPool.QueueUserWorkItem(s_waitCallbackRunAction, continuation);
@@ -103,6 +109,7 @@ namespace System.Runtime.CompilerServices
                         {
                             ThreadPool.UnsafeQueueUserWorkItem(s_waitCallbackRunAction, continuation);
                         }
+#endif
                     }
                     // We're targeting a custom scheduler, so queue a task.
                     else
@@ -136,7 +143,11 @@ namespace System.Runtime.CompilerServices
                     TaskScheduler scheduler = TaskScheduler.Current;
                     if (scheduler == TaskScheduler.Default)
                     {
+#if TARGET_WASI
+                        ThreadPoolWorkQueue.IsoplaneYield(box);
+#else
                         ThreadPool.UnsafeQueueUserWorkItemInternal(box, preferLocal: false);
+#endif
                     }
                     else
                     {

@@ -994,7 +994,17 @@ namespace System.Threading
             public void Execute() => _workItem.Execute();
         }
 
-        private static bool IsoplaneDefers(ref object workItem)
+        /// <summary>
+        /// Queues a <see cref="Task.Yield"/> continuation for the next slice of its dispatch, even
+        /// when that dispatch is the one running, so that a yield returns control to the host.
+        /// </summary>
+        internal static void IsoplaneYield(object workItem)
+        {
+            bool waits = IsoplaneDefers(ref workItem, untilNextSlice: true);
+            Debug.Assert(waits);
+        }
+
+        private static bool IsoplaneDefers(ref object workItem, bool untilNextSlice = false)
         {
             long owner;
             switch (workItem)
@@ -1024,7 +1034,7 @@ namespace System.Threading
                     break;
             }
             long dispatch = IsoplaneResolveOwner(owner);
-            if (dispatch == s_isoplaneCurrent)
+            if (dispatch == s_isoplaneCurrent && !untilNextSlice)
                 return false;
             s_isoplaneWaiting.TryGetValue(dispatch, out Queue<object>? waiting);
             (waiting ??= new Queue<object>()).Enqueue(workItem);
