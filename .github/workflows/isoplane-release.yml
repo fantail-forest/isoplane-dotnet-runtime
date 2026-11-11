@@ -1,0 +1,70 @@
+name: Isoplane build release
+on:
+  workflow_dispatch:
+    inputs:
+      revision:
+        description: Full commit on isoplane-revisions whose build to keep as a release
+        required: true
+        type: string
+permissions:
+  contents: read
+defaults:
+  run:
+    shell: bash
+jobs:
+  release:
+    name: Keep a revision's compiler feed as a release
+    if: github.repository == 'fantail-forest/isoplane-dotnet-runtime'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      actions: read
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      REVISION: ${{ inputs.revision }}
+    steps:
+      - name: Require a landed revision
+        run: |
+          [[ "$REVISION" =~ ^[0-9a-f]{40}$ ]] || { echo "Give the full 40-character commit." >&2; exit 1; }
+          status=$(gh api "repos/$GH_REPO/compare/isoplane-revisions...$REVISION" --jq .status)
+          case "$status" in
+            identical|behind) ;;
+            *) echo "$REVISION is not on isoplane-revisions ($status)." >&2; exit 1 ;;
+          esac
+      - name: Require a release of the pinned OpenSSL revision
+        run: |
+          fork=fantail-forest/isoplane-openssl
+          openssl=$(gh api "repos/$GH_REPO/contents/eng/isoplane/manifest.env?ref=$REVISION" -H 'Accept: application/vnd.github.raw' | sed -n 's/^OPENSSL_REVISION=//p')
+          [[ "$openssl" =~ ^[0-9a-f]{40}$ ]] || { echo "$REVISION pins no OpenSSL revision in eng/isoplane/manifest.env." >&2; exit 1; }
+          tag="isoplane-wasi-$openssl"
+          tagged=$(gh api "repos/$fork/commits/$tag" --jq .sha) || { echo "$fork has no tag $tag; run its release workflow for $openssl." >&2; exit 1; }
+          [ "$tagged" = "$openssl" ] || { echo "$fork: tag $tag is at $tagged, not at the pinned revision." >&2; exit 1; }
+          assets=$(gh release view "$tag" --repo "$fork" --json isDraft,assets --jq 'select(.isDraft == false) | [.assets[].name] | join(" ")')
+          for asset in openssl-wasi.tar.gz SHA256SUMS; do
+            [[ " $assets " == *" $asset "* ]] || { echo "$fork: release $tag lacks $asset or is not published." >&2; exit 1; }
+          done
+      - name: Download the revision's build
+        run: |
+          run=$(gh api "repos/$GH_REPO/actions/runs?head_sha=$REVISION&per_page=100" --jq '
+            [.workflow_runs[] | select(.path == ".github/workflows/isoplane.yml" and .event != "pull_request" and .conclusion == "success")]
+            | first | .id // empty')
+          [ -n "$run" ] || { echo "No successful build of $REVISION exists; push a branch at it to build one." >&2; exit 1; }
+          gh run download "$run" --name runtime-feed --dir .
+          sha256sum --check SHA256SUMS
+      - name: Publish the revision-specific runtime feed
+        run: |
+          tag="isoplane-runtime-$REVISION"
+          if draft=$(gh release view "$tag" --json isDraft --jq .isDraft 2>/dev/null); then
+            if [ "$draft" = false ]; then
+              echo "Release $tag is already published."
+              exit 0
+            fi
+          else
+            gh release create "$tag" --target "$REVISION" --draft --prerelease \
+              --title "Isoplane runtime feed $REVISION" \
+              --notes 'Portable Mono runtime and WASI SDK packages built from this revision and its pinned dependencies. Includes original licenses and source identities.'
+          fi
+          gh release upload "$tag" runtime-feed.tar.gz SHA256SUMS --clobber
+          gh release edit "$tag" --draft=false --latest=false

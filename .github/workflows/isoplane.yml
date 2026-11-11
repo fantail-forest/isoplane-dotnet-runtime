@@ -1,7 +1,7 @@
 name: Isoplane fork checks
 on:
   push:
-    branches: [isoplane-revisions]
+    branches: [isoplane-revisions, 'isoplane/**']
   pull_request:
     branches: [isoplane-revisions]
   workflow_dispatch:
@@ -56,17 +56,9 @@ jobs:
           echo "$WASI_SDK_VERSION" > "$WASI_SDK_PATH/wasi-sdk-version.txt"
           touch "$WASI_SDK_PATH/WASI-SDK-VERSION-$WASI_SDK_VERSION"
       - name: Download the pinned OpenSSL libraries
-        run: |
-          source eng/isoplane/manifest.env
-          url="https://github.com/fantail-forest/isoplane-openssl/releases/download/isoplane-wasi-$OPENSSL_REVISION"
-          mkdir -p "$RUNNER_TEMP/openssl-download" "$ISOPLANE_RUNTIME_OUTPUT/openssl"
-          cd "$RUNNER_TEMP/openssl-download"
-          curl --fail --location --retry 3 "$url/openssl-wasi.tar.gz" -o openssl-wasi.tar.gz
-          curl --fail --location --retry 3 "$url/SHA256SUMS" -o SHA256SUMS
-          sha256sum --check SHA256SUMS
-          tar -xzf openssl-wasi.tar.gz -C "$ISOPLANE_RUNTIME_OUTPUT/openssl"
-          jq -e --arg revision "$OPENSSL_REVISION" --arg sdk "$WASI_SDK_VERSION" \
-            '.source_revision == $revision and (.wasi_sdk | split("\n")[0]) == $sdk' "$ISOPLANE_RUNTIME_OUTPUT/openssl/source.json"
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash eng/isoplane/fetch-openssl.sh "$ISOPLANE_RUNTIME_OUTPUT/openssl"
       - name: Prepare ICU data and native inputs
         run: bash eng/isoplane/build-icu.sh dependencies/icu "$ISOPLANE_RUNTIME_WORK" "$ISOPLANE_RUNTIME_OUTPUT"
       - name: Build the runtime and compiler packages
@@ -85,7 +77,7 @@ jobs:
           path: |
             runtime-feed.tar.gz
             SHA256SUMS
-          retention-days: 1
+          retention-days: 90
           compression-level: 0
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: failure()
@@ -96,32 +88,3 @@ jobs:
       - name: Record disk consumption
         if: always()
         run: df -h .
-
-  publish:
-    needs: check
-    if: github.repository == 'fantail-forest/isoplane-dotnet-runtime' && github.ref == 'refs/heads/isoplane-revisions' && github.event_name != 'pull_request'
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with: {name: runtime-feed}
-      - name: Publish the revision-specific runtime feed
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-        run: |
-          tag="isoplane-runtime-$GITHUB_SHA"
-          if draft=$(gh release view "$tag" --json isDraft --jq .isDraft 2>/dev/null); then
-            if [ "$draft" = false ]; then
-              echo "Release $tag is already published."
-              exit 0
-            fi
-          else
-            gh release create "$tag" --target "$GITHUB_SHA" --draft --prerelease \
-              --title "Isoplane runtime feed $GITHUB_SHA" \
-              --notes 'Portable Mono runtime and WASI SDK packages built from this revision and its pinned dependencies. Includes original licenses and source identities.'
-          fi
-          gh release upload "$tag" runtime-feed.tar.gz SHA256SUMS --clobber
-          gh release edit "$tag" --draft=false --latest=false
