@@ -1,0 +1,6 @@
+isoplane_socket_open
+isoplane_socket_close
+isoplane_socket_connect
+isoplane_socket_get_option
+isoplane_socket_set_option
+isoplane_socket_send

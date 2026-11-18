@@ -9,6 +9,9 @@ add_executable(dotnet ../../browser/runtime/runtime.c ../../browser/runtime/pinv
 
 # Isoplane imports require a core module, including in the pack's default runner.
 target_link_options(dotnet PRIVATE "-Wl,--skip-wit-component")
+# Isoplane's platform layer defines its socket functions in a guest's link,
+# so the pack's default runner, linked without it, imports them.
+target_link_options(dotnet PRIVATE "-Wl,--allow-undefined-file=${CMAKE_CURRENT_SOURCE_DIR}/isoplane-platform-symbols.txt")
 
 target_include_directories(dotnet PUBLIC ${MONO_INCLUDES} ../../wasm/runtime ${MONO_OBJ_INCLUDES} ${CMAKE_CURRENT_BINARY_DIR}/include/wasm)
 target_compile_options(dotnet PUBLIC @${NATIVE_BIN_DIR}/src/wasi-default.rsp @${NATIVE_BIN_DIR}/src/wasi-compile.rsp -DGEN_PINVOKE=1)

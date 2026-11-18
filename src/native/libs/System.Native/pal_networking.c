@@ -75,6 +75,18 @@
 #endif
 
 
+#if defined(TARGET_WASI)
+#include "pal_isoplane_sockets.h"
+
+// The socket calls below reach Isoplane's functions, with the call sites as
+// they are for every other platform.
+#define socket(domain, type, protocol) isoplane_socket_open(domain, type, protocol)
+#define connect(fd, address, length) isoplane_socket_connect(fd, address, length)
+#define getsockopt(fd, level, option, value, length) isoplane_socket_get_option(fd, level, option, value, length)
+#define setsockopt(fd, level, option, value, length) isoplane_socket_set_option(fd, level, option, value, length)
+#define send(fd, buffer, length, flags) isoplane_socket_send(fd, buffer, length, flags)
+#endif // TARGET_WASI
+
 #if HAVE_KQUEUE
 #if KEVENT_HAS_VOID_UDATA
 static void* GetKeventUdata(uintptr_t udata)
