@@ -342,6 +342,32 @@ static void reset_managed_data_breakpoints (void);
 #ifndef DISABLE_SOCKET_TRANSPORT
 static SOCKET conn_fd;
 static SOCKET listen_fd;
+
+#ifdef HOST_WASI
+/*
+ * Isoplane's socket functions, defined by the platform layer every Isoplane
+ * guest links. They keep the host resource behind a descriptor, which libc
+ * does not expose, so TCP_NODELAY reaches the host and a send that cannot
+ * complete reports EWOULDBLOCK instead of waiting inside the call. Each has
+ * the contract of the libc function it stands in for.
+ */
+int isoplane_socket_open (int domain, int type, int protocol);
+int isoplane_socket_close (int fd);
+int isoplane_socket_connect (int fd, const struct sockaddr *address, socklen_t length);
+int isoplane_socket_set_option (int fd, int level, int option, const void *value, socklen_t length);
+ssize_t isoplane_socket_send (int fd, const void *buffer, size_t length, int flags);
+#define agent_socket_open isoplane_socket_open
+#define agent_socket_close isoplane_socket_close
+#define agent_socket_connect isoplane_socket_connect
+#define agent_socket_set_option isoplane_socket_set_option
+#define agent_socket_send isoplane_socket_send
+#else
+#define agent_socket_open socket
+#define agent_socket_close close
+#define agent_socket_connect connect
+#define agent_socket_set_option setsockopt
+#define agent_socket_send send
+#endif
 #endif
 
 static int objref_id = 0;
@@ -1006,7 +1032,7 @@ socket_transport_send (void *data, int len)
 	MONO_REQ_GC_SAFE_MODE;
 
 	while (total < len) {
-		int res = send (conn_fd, (const char*)data + total, len - total, 0);
+		int res = agent_socket_send (conn_fd, (const char*)data + total, len - total, 0);
 		if (res > 0) {
 			total += res;
 			continue;
@@ -1095,7 +1121,7 @@ socket_transport_connect (const char *address)
 			socklen_t addrlen;
 
 			/* No address, generate one */
-			sfd = socket (AF_INET, SOCK_STREAM, 0);
+			sfd = agent_socket_open (AF_INET, SOCK_STREAM, 0);
 			if (sfd == INVALID_SOCKET) {
 				PRINT_ERROR_MSG ("debugger-agent: Unable to create a socket: %s\n", strerror (get_last_sock_error ()));
 				exit (1);
@@ -1131,11 +1157,11 @@ socket_transport_connect (const char *address)
 				mono_debugger_socket_address_init (&sockaddr, &sock_len, rp->family, &rp->address, port);
 				MONO_EXIT_GC_UNSAFE;
 
-				sfd = socket (rp->family, rp->socktype, rp->protocol);
+				sfd = agent_socket_open (rp->family, rp->socktype, rp->protocol);
 				if (sfd == INVALID_SOCKET)
 					continue;
 
-				if (setsockopt (sfd, SOL_SOCKET, SO_REUSEADDR, (const char*)&n, sizeof(n)) == SOCKET_ERROR)
+				if (agent_socket_set_option (sfd, SOL_SOCKET, SO_REUSEADDR, (const char*)&n, sizeof(n)) == SOCKET_ERROR)
 					continue;
 
 				res = bind (sfd, &sockaddr.addr, sock_len);
@@ -1190,7 +1216,7 @@ socket_transport_connect (const char *address)
 				mono_debugger_socket_address_init (&sockaddr, &sock_len, rp->family, &rp->address, port);
 				MONO_EXIT_GC_UNSAFE;
 
-				sfd = socket (rp->family, rp->socktype,
+				sfd = agent_socket_open (rp->family, rp->socktype,
 							rp->protocol);
 				if (sfd == INVALID_SOCKET) {
 					perror("socket");
@@ -1204,10 +1230,10 @@ socket_transport_connect (const char *address)
 					struct timeval timeout;
 					timeout.tv_sec  = 5;
 					timeout.tv_usec = 0;
-					setsockopt(sfd, SOL_SOCKET, SO_SNDTIMEO, (const char *)&timeout, sizeof(timeout));
+					agent_socket_set_option (sfd, SOL_SOCKET, SO_SNDTIMEO, (const char *)&timeout, sizeof(timeout));
 				}
 
-				res = connect (sfd, &sockaddr.addr, sock_len);
+				res = agent_socket_connect (sfd, &sockaddr.addr, sock_len);
 
 				if (res != SOCKET_ERROR)
 					break;       /* Success */
@@ -1215,7 +1241,7 @@ socket_transport_connect (const char *address)
 	#ifdef HOST_WIN32
 				closesocket (sfd);
 	#else
-				close (sfd);
+				agent_socket_close (sfd);
 	#endif
 			}
 			elapsedTime = GDOUBLE_TO_UINT32 (difftime (time (NULL), startTime) * 1000);
@@ -1258,7 +1284,7 @@ socket_transport_close1 (void)
 #else
 	shutdown (conn_fd, SHUT_RD);
 	shutdown (listen_fd, SHUT_RDWR);
-	close (listen_fd);
+	agent_socket_close (listen_fd);
 #endif
 }
 
@@ -1484,7 +1510,7 @@ transport_handshake (void)
 	MONO_ENTER_GC_SAFE;
 	if (conn_fd) {
 		int flag = 1;
-		int result = setsockopt (conn_fd,
+		int result = agent_socket_set_option (conn_fd,
                                  IPPROTO_TCP,
                                  TCP_NODELAY,
                                  (char *) &flag,

@@ -8,6 +8,9 @@
 #include "pal_utilities.h"
 #include "pal_safecrt.h"
 #include "pal_types.h"
+#if defined(TARGET_WASI)
+#include "pal_isoplane_sockets.h"
+#endif
 
 #include <assert.h>
 #include <fcntl.h>
@@ -343,7 +346,12 @@ intptr_t SystemNative_Open(const char* path, int32_t flags, int32_t mode)
 
 int32_t SystemNative_Close(intptr_t fd)
 {
+#if defined(TARGET_WASI)
+    // A socket is closed through here, and Isoplane's close also releases what it keeps for the descriptor.
+    int result = isoplane_socket_close(ToFileDescriptor(fd));
+#else
     int result = close(ToFileDescriptor(fd));
+#endif
     if (result < 0 && errno == EINTR) result = 0; // on all supported platforms, close(2) returning EINTR still means it was released
     return result;
 }
