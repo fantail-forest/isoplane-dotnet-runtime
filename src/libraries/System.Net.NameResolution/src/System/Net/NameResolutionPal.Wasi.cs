@@ -56,6 +56,7 @@ namespace System.Net
         {
             cancellationToken.ThrowIfCancellationRequested();
             (int stream, int pollable) = StartLookup(hostName);
+            IPHostEntry.RememberIsoplaneLookup(stream, hostName);
             try
             {
                 await RegisterWasiPollableHandle((Thread)null!, pollable, true, cancellationToken).ConfigureAwait(false);
@@ -71,6 +72,7 @@ namespace System.Net
             }
             finally
             {
+                IPHostEntry.ForgetIsoplaneLookup(stream);
                 Interop.Sys.WasiResolveAddressesDrop(stream);
             }
         }

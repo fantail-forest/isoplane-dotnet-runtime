@@ -74,6 +74,7 @@ namespace System.Net.Sockets
 
         protected override bool ReleaseHandle()
         {
+            Socket.ForgetIsoplaneOrigin(this);
             _released = true;
             bool shouldClose = TryOwnClose();
 

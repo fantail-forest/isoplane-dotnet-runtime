@@ -17,6 +17,9 @@ namespace System.Net.Http
     /// <summary>Provides a state bag of settings for configuring HTTP connections.</summary>
     internal sealed class HttpConnectionSettings
     {
+        // Where the handler these settings belong to was created, while Isoplane records it.
+        internal System.Diagnostics.StackTrace? _isoplaneOrigin = SocketsHttpHandler.IsoplaneHandlerOrigin();
+
         internal DecompressionMethods _automaticDecompression = HttpHandlerDefaults.DefaultAutomaticDecompression;
 
         internal bool _useCookies = HttpHandlerDefaults.DefaultUseCookies;
@@ -98,6 +101,7 @@ namespace System.Net.Http
 
             var settings = new HttpConnectionSettings()
             {
+                _isoplaneOrigin = _isoplaneOrigin,
                 _allowAutoRedirect = _allowAutoRedirect,
                 _automaticDecompression = _automaticDecompression,
                 _cookieContainer = _cookieContainer,

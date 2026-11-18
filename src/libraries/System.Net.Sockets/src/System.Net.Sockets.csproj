@@ -34,6 +34,7 @@
     <Compile Include="System\Net\Sockets\SelectMode.cs" />
     <Compile Include="System\Net\Sockets\SendPacketsElement.cs" />
     <Compile Include="System\Net\Sockets\Socket.cs" />
+    <Compile Include="System\Net\Sockets\Socket.Isoplane.cs" />
     <Compile Include="System\Net\Sockets\Socket.Tasks.cs" />
     <Compile Include="System\Net\Sockets\SocketAsyncEventArgs.cs" />
     <Compile Include="System\Net\Sockets\SocketAsyncOperation.cs" />
@@ -308,6 +309,7 @@
     <ProjectReference Include="$(LibrariesProjectRoot)System.Console\src\System.Console.csproj" Condition="'$(Configuration)' == 'Debug'" />
     <ProjectReference Include="$(LibrariesProjectRoot)System.Diagnostics.DiagnosticSource\src\System.Diagnostics.DiagnosticSource.csproj" />
     <ProjectReference Include="$(LibrariesProjectRoot)System.Diagnostics.Tracing\src\System.Diagnostics.Tracing.csproj" />
+    <ProjectReference Include="$(LibrariesProjectRoot)System.Diagnostics.StackTrace\src\System.Diagnostics.StackTrace.csproj" />
     <ProjectReference Include="$(LibrariesProjectRoot)System.Memory\src\System.Memory.csproj" />
     <ProjectReference Include="$(LibrariesProjectRoot)System.Net.NameResolution\src\System.Net.NameResolution.csproj" />
     <ProjectReference Include="$(LibrariesProjectRoot)System.Net.Primitives\src\System.Net.Primitives.csproj" />
