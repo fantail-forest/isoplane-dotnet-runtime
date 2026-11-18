@@ -112,6 +112,9 @@
       - @(EmccExportedRuntimeMethod) - Extra method for emcc flag EXPORTED_RUNTIME_METHODS
       - @(EmccExportedLibraryFunction) - Extra method for emcc flag DEFAULT_LIBRARY_FUNCS_TO_INCLUDE
       - @(EmccExportedFunction)      - Extra function for emcc flag EXPORTED_FUNCTIONS
+      - @(WasmPInvokeModule)         - Extra module names whose P/Invokes get entries in the generated P/Invoke table.
+      - @(WasmGenerationKey)         - Values naming build inputs that are not files, such as a package digest.
+                                       A changed value regenerates the bundle objects and the managed-to-native tables.
   -->
 
   <UsingTask TaskName="Microsoft.WebAssembly.Build.Tasks.WasmLoadAssembliesAndReferences" AssemblyFile="$(WasmAppBuilderTasksAssemblyPath)" TaskFactory="TaskHostFactory" />
@@ -743,7 +746,19 @@
     </ItemGroup>
   </Target>
 
-  <Target Name="_GenerateManagedToNative">
+  <!--
+    Managed-to-native generation scans every assembly, so it runs only when an
+    input changes. The generator leaves an unchanged header untouched, so a
+    completion stamp records a successful run, and an unchanged header forces
+    no recompile and no relink.
+  -->
+  <Target Name="_GenerateManagedToNative" DependsOnTargets="_WasmManagedToNativeInputs;_WasmGenerateManagedToNativeTables">
+    <ItemGroup>
+      <FileWrites Include="@(_WasmManagedToNativeOutput);$(_WasmM2NCachePath);$(_WasmManagedToNativeInventoryPath);$(_WasmManagedToNativeStampPath)" />
+    </ItemGroup>
+  </Target>
+
+  <Target Name="_WasmManagedToNativeInputs">
     <ItemGroup>
       <_WasmPInvokeModules Include="%(_WasmNativeFileForLinking.FileName)" Condition="'%(_WasmNativeFileForLinking.ScanForPInvokes)' != 'false'" />
 
@@ -752,23 +767,47 @@
       <_WasmPInvokeModules Include="libSystem.Globalization.Native" />
       <!-- The runtime pack's cryptography backend, when the pack carries it. -->
       <_WasmPInvokeModules Include="libSystem.Security.Cryptography.Native.OpenSsl" Condition="Exists('$(MicrosoftNetCoreAppRuntimePackRidNativeDir)libSystem.Security.Cryptography.Native.OpenSsl.a')" />
+      <_WasmPInvokeModules Include="@(WasmPInvokeModule)" />
     </ItemGroup>
 
     <PropertyGroup>
       <_HasMscorlib Condition="'%(_WasmAssembliesInternal.FileName)%(_WasmAssembliesInternal.Extension)' == 'mscorlib.dll'">true</_HasMscorlib>
       <_MscorlibPath Condition="'$(_HasMscorlib)' != 'true'">$([System.IO.Path]::Combine($(MicrosoftNetCoreAppRuntimePackRidLibTfmDir), 'mscorlib.dll'))</_MscorlibPath>
+      <_WasmManagedToNativeInventoryPath>$(_WasmIntermediateOutputPath)managed-to-native.inputs</_WasmManagedToNativeInventoryPath>
+      <_WasmManagedToNativeStampPath>$(_WasmIntermediateOutputPath)managed-to-native.complete</_WasmManagedToNativeStampPath>
     </PropertyGroup>
 
     <Error Condition="'$(_HasMscorlib)' != 'true' and !Exists($(_MscorlibPath))" Text="Could not find 'mscorlib.dll' in the runtime pack at $(_MscorlibPath)" />
     <Error Condition="'$(_MonoAotCrossCompilerPath)' == '' or !Exists('$(_MonoAotCrossCompilerPath)')"
            Text="Could not find AOT cross compiler at %24(_MonoAotCrossCompilerPath)=$(_MonoAotCrossCompilerPath)" />
 
-    <Exec Command='"$(_MonoAotCrossCompilerPath)" --print-icall-table > "$(_WasmRuntimeICallTablePath)"' Condition="!Exists($(_WasmRuntimeICallTablePath))" />
-    <ItemGroup>
-      <FileWrites Include="$(_WasmRuntimeICallTablePath)" />
-    </ItemGroup>
-
     <MakeDir Directories="$(_WasmIntermediateOutputPath)" Condition="!Exists('$(_WasmIntermediateOutputPath)')"  />
+
+    <ItemGroup>
+      <_WasmManagedToNativeInput Include="@(_WasmAssembliesInternal);$(_MscorlibPath);$(WasmPInvokeSymbolInventoryFile);$(_MonoAotCrossCompilerPath);$(WasmAppBuilderTasksAssemblyPath);$(MSBuildAllProjects);$(MSBuildThisFileFullPath)" />
+      <_WasmManagedToNativeOutput Include="$(_WasmRuntimeICallTablePath);$(_WasmICallTablePath);$(_WasmPInvokeTablePath);$(_WasmInterpToNativeTablePath)" />
+    </ItemGroup>
+    <Error Condition="!Exists('%(_WasmManagedToNativeInput.Identity)')" Text="A managed-to-native generation input is missing: %(_WasmManagedToNativeInput.Identity)" />
+
+    <GetFileHash Files="$(_WasmManagedToNativeInventoryPath)" Condition="Exists('$(_WasmManagedToNativeInventoryPath)')">
+      <Output TaskParameter="Hash" PropertyName="_WasmPreviousManagedToNativeInventoryHash" />
+    </GetFileHash>
+    <WriteLinesToFile File="$(_WasmManagedToNativeInventoryPath)" Overwrite="true" WriteOnlyWhenDifferent="true"
+                      Lines="@(_WasmManagedToNativeInput);@(_WasmPInvokeModules);@(_WasmManagedToNativeOutput);$(_IsLibraryMode);$(WasmRequirePInvokeSymbolInventory);@(WasmGenerationKey)" />
+    <GetFileHash Files="$(_WasmManagedToNativeInventoryPath)">
+      <Output TaskParameter="Hash" PropertyName="_WasmManagedToNativeInventoryHash" />
+    </GetFileHash>
+    <!-- On shared storage a changed inventory can carry a write time earlier
+         than a stamp the client's clock created, so its content decides. -->
+    <Delete Files="$(_WasmManagedToNativeStampPath)" Condition="'$(_WasmPreviousManagedToNativeInventoryHash)' != '$(_WasmManagedToNativeInventoryHash)'" />
+    <Delete Files="$(_WasmManagedToNativeStampPath)" Condition="!Exists('%(_WasmManagedToNativeOutput.Identity)')" />
+  </Target>
+
+  <Target Name="_WasmGenerateManagedToNativeTables"
+          Inputs="@(_WasmManagedToNativeInput);$(_WasmManagedToNativeInventoryPath)"
+          Outputs="$(_WasmManagedToNativeStampPath)">
+    <Delete Files="$(_WasmManagedToNativeStampPath)" />
+    <Exec Command='"$(_MonoAotCrossCompilerPath)" --print-icall-table > "$(_WasmRuntimeICallTablePath)"' />
 
     <ManagedToNativeGenerator
       Assemblies="@(_WasmAssembliesInternal);$(_MscorlibPath)"
@@ -783,6 +822,7 @@
       IsLibraryMode="$(_IsLibraryMode)">
       <Output TaskParameter="FileWrites" ItemName="FileWrites" />
     </ManagedToNativeGenerator>
+    <Touch Files="$(_WasmManagedToNativeStampPath)" AlwaysCreate="true" />
   </Target>
 
   <Target Name="_WasmSelectRuntimeComponentsForLinking" Condition="'$(WasmIsWorkloadAvailable)' == 'true'" DependsOnTargets="_MonoSelectRuntimeComponents" />
@@ -870,10 +910,44 @@
     </ItemGroup>
   </Target>
 
-  <Target Name="_GenerateObjectFilesForSingleFileBundle" Returns="@(_WasmObjectFilesForBundle)" Condition="'$(WasmSingleFileBundle)' == 'true'">
+  <!--
+    The emitter compiles every bundled resource whenever it runs, so it runs
+    only when an input changes. The manifest lists the objects the last
+    complete run produced; without it, or with objects it does not account
+    for, the emitter runs again.
+  -->
+  <Target Name="_GenerateObjectFilesForSingleFileBundle" Returns="@(_WasmObjectFilesForBundle)" Condition="'$(WasmSingleFileBundle)' == 'true'"
+          DependsOnTargets="_WasmBundleObjectInputs;_WasmEmitBundleObjectFiles;_WasmCollectBundleObjectFiles" />
+
+  <Target Name="_WasmBundleObjectInputs">
     <Error Condition="'$(_IsToolchainMissing)' == 'true'"
            Text="$(_ToolchainMissingErrorMessage) SDK is required for building native files." />
 
+    <MakeDir Directories="$(_WasmIntermediateOutputPath)" />
+    <PropertyGroup>
+      <_WasmBundleInventoryPath>$(_WasmIntermediateOutputPath)bundle-objects.inputs</_WasmBundleInventoryPath>
+      <_WasmBundleManifestPath>$(_WasmIntermediateOutputPath)bundle-objects.outputs</_WasmBundleManifestPath>
+      <_WasmBundleManifestCompleteLine>#bundle-objects-complete</_WasmBundleManifestCompleteLine>
+    </PropertyGroup>
+    <ItemGroup>
+      <_WasmBundleObjectInput Include="@(_WasmBundleItem);@(_WasmBundleItem->'%(SymbolFile)');$(WasmClang);$(MonoTargetsTasksAssemblyPath);$(MSBuildThisFileFullPath)" />
+    </ItemGroup>
+    <WriteLinesToFile File="$(_WasmBundleInventoryPath)" Overwrite="true" WriteOnlyWhenDifferent="true"
+                      Lines="@(_WasmBundleObjectInput);@(_WasmBundleItem->'%(Identity)|%(RegisteredName)|%(Culture)|%(SymbolFile)|%(BundleFile)|%(BundleRegistrationFunctionName)');@(WasmGenerationKey)" />
+    <ReadLinesFromFile File="$(_WasmBundleManifestPath)" Condition="Exists('$(_WasmBundleManifestPath)')">
+      <Output TaskParameter="Lines" ItemName="_WasmBundleManifestLine" />
+    </ReadLinesFromFile>
+    <ItemGroup>
+      <_WasmBundleManifestCompletion Include="@(_WasmBundleManifestLine)" Condition="'%(Identity)' == '$(_WasmBundleManifestCompleteLine)'" />
+      <_WasmPreviousBundleObject Include="@(_WasmBundleManifestLine)" Exclude="$(_WasmBundleManifestCompleteLine)" />
+    </ItemGroup>
+    <Delete Files="$(_WasmBundleManifestPath)"
+            Condition="'@(_WasmBundleManifestCompletion)' == '' or ('@(_WasmBundleItem)' != '' and '@(_WasmPreviousBundleObject)' == '')" />
+  </Target>
+
+  <Target Name="_WasmEmitBundleObjectFiles"
+          Inputs="@(_WasmBundleObjectInput);$(_WasmBundleInventoryPath)"
+          Outputs="$(_WasmBundleManifestPath);@(_WasmPreviousBundleObject)">
     <!-- batched on .BundleRegistrationFunctionName+.BundleFile -->
     <EmitBundleObjectFiles
                 FilesToBundle="@(_WasmBundleItem)"
@@ -885,13 +959,21 @@
                 <Output TaskParameter="BundleRegistrationFile" ItemName="_EmitBundleRegistrationFile" />
     </EmitBundleObjectFiles>
 
-    <ItemGroup>
-      <_EmitBundleOutputFile Remove="@(_EmitBundleOutputFile)" />
-      <_EmitBundleOutputFile Include="%(_EmitBundleOutputItem.DestinationFile)" />
-      <_EmitBundleOutputFile Include="@(_EmitBundleRegistrationFile)" />
+    <WriteLinesToFile File="$(_WasmBundleManifestPath).tmp" Overwrite="true"
+                      Lines="@(_EmitBundleOutputItem->'%(DestinationFile)');@(_EmitBundleRegistrationFile);$(_WasmBundleManifestCompleteLine)" />
+    <!-- NFS can report a writable file as read-only, and Move refuses to
+         replace a read-only destination. -->
+    <Delete Files="$(_WasmBundleManifestPath)" />
+    <Move SourceFiles="$(_WasmBundleManifestPath).tmp" DestinationFiles="$(_WasmBundleManifestPath)" />
+  </Target>
 
-      <_WasmObjectFilesForBundle Include="@(_EmitBundleOutputFile)" />
-      <FileWrites Include="@(_EmitBundleOutputFile)" />
+  <Target Name="_WasmCollectBundleObjectFiles">
+    <ReadLinesFromFile File="$(_WasmBundleManifestPath)">
+      <Output TaskParameter="Lines" ItemName="_WasmObjectFilesForBundle" />
+    </ReadLinesFromFile>
+    <ItemGroup>
+      <_WasmObjectFilesForBundle Remove="$(_WasmBundleManifestCompleteLine)" />
+      <FileWrites Include="@(_WasmObjectFilesForBundle);$(_WasmBundleInventoryPath);$(_WasmBundleManifestPath)" />
     </ItemGroup>
   </Target>
 
