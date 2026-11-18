@@ -6,6 +6,9 @@
       <!-- called through UnsafeAccessor by System.Net.Http tests -->
       <method name="get_InitialHttp2MaxConcurrentStreams" />
       <method name="set_InitialHttp2MaxConcurrentStreams" />
+      <!-- called by the Isoplane SDK while it prepares a template -->
+      <method name="RecordIsoplaneConnectionOwners" />
+      <method name="IsoplaneConnectionOwner" />
     </type>
   </assembly>
 </linker>

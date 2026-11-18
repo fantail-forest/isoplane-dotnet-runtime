@@ -219,6 +219,7 @@
     <Compile Include="System\Net\Http\SocketsHttpHandler\RedirectHandler.cs" />
     <Compile Include="System\Net\Http\SocketsHttpHandler\SocketsHttpConnectionContext.cs" />
     <Compile Include="System\Net\Http\SocketsHttpHandler\SocketsHttpHandler.cs" />
+    <Compile Include="System\Net\Http\SocketsHttpHandler\SocketsHttpHandler.Isoplane.cs" />
     <Compile Include="System\Net\Http\HttpTelemetry.AnyOS.cs" />
     <Compile Include="System\Net\Http\SocketsHttpHandler\SystemProxyInfo.cs" Condition="'$(TargetPlatformIdentifier)' != 'wasi'" />
     <Compile Include="System\Net\Http\SocketsHttpHandler\SocksHelper.cs" />

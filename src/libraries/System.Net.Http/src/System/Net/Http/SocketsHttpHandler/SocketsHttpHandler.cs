@@ -17,7 +17,7 @@ using System.Threading.Tasks;
 namespace System.Net.Http
 {
     [UnsupportedOSPlatform("browser")]
-    public sealed class SocketsHttpHandler : HttpMessageHandler
+    public sealed partial class SocketsHttpHandler : HttpMessageHandler
     {
         private readonly HttpConnectionSettings _settings = new HttpConnectionSettings();
         private HttpMessageHandlerStage? _handler;

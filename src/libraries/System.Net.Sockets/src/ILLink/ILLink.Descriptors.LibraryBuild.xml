@@ -1,0 +1,9 @@
+<linker>
+  <assembly fullname="System.Net.Sockets">
+    <!-- Called by the Isoplane SDK while it prepares a template. -->
+    <type fullname="System.Net.Sockets.Socket">
+      <method name="RecordIsoplaneSocketOrigins" />
+      <method name="TakeIsoplaneOpenSockets" />
+    </type>
+  </assembly>
+</linker>

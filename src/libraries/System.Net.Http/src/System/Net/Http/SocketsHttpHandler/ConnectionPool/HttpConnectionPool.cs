@@ -674,6 +674,7 @@ namespace System.Net.Http
                 {
                     // Otherwise, create and connect a socket using default settings.
                     Socket socket = new Socket(SocketType.Stream, ProtocolType.Tcp) { NoDelay = true };
+                    SocketsHttpHandler.RememberIsoplaneOwner(socket, Settings._isoplaneOrigin);
                     try
                     {
                         if (async)

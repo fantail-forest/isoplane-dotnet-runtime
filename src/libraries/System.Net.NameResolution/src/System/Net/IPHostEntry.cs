@@ -4,7 +4,7 @@
 namespace System.Net
 {
     /// <summary>Provides a container class for Internet host address information.</summary>
-    public class IPHostEntry
+    public partial class IPHostEntry
     {
         // Technically there's nothing to prevent someone from doing `new IPHostEntry()`, at which point
         // all of these fields will be null.  However, that it not the intended usage of this type, which

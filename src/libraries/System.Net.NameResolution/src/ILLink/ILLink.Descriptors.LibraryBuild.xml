@@ -1,0 +1,9 @@
+<linker>
+  <assembly fullname="System.Net.NameResolution">
+    <!-- Called by the Isoplane SDK while it prepares a template. -->
+    <type fullname="System.Net.IPHostEntry">
+      <method name="RecordIsoplaneLookups" />
+      <method name="TakeIsoplanePendingLookups" />
+    </type>
+  </assembly>
+</linker>
