@@ -885,8 +885,52 @@ intptr_t SystemNative_MksTemps(char* pathTemplate, int32_t suffixLength)
         pathTemplate[firstSuffixIndex] = firstSuffixChar;
     }
 #elif TARGET_WASI
-    assert_msg(false, "Not supported on WASI", 0);
+    // WASI libc has neither mkstemps nor mkstemp.
+    size_t pathTemplateLength = strlen(pathTemplate);
+    if (suffixLength < 0 || (size_t)suffixLength > pathTemplateLength ||
+        pathTemplateLength - (size_t)suffixLength < 6 ||
+        memcmp(pathTemplate + pathTemplateLength - (size_t)suffixLength - 6, "XXXXXX", 6) != 0)
+    {
+        errno = EINVAL;
+        return -1;
+    }
+
+    // One case, so names stay distinct on a case-insensitive file system, and
+    // 32 characters, so five bits of a random byte choose one without bias.
+    static const char alphabet[] = "abcdefghijklmnopqrstuvwxyz012345";
+    char* placeholder = pathTemplate + pathTemplateLength - (size_t)suffixLength - 6;
+
     result = -1;
+    for (int attempt = 0; attempt < 100; attempt++)
+    {
+        // getentropy asks the host on every call and keeps no generator state
+        // in the guest's memory. Instances started from one memory image
+        // would replay a generator seeded before the image was taken.
+        uint8_t random[6];
+        if (getentropy(random, sizeof(random)) != 0)
+        {
+            break;
+        }
+        for (size_t i = 0; i < sizeof(random); i++)
+        {
+            placeholder[i] = alphabet[random[i] & 31];
+        }
+
+        while ((result = open(pathTemplate, O_RDWR | O_CREAT | O_EXCL, S_IRUSR | S_IWUSR)) < 0 && errno == EINTR);
+        // Only a taken name is worth another one: any other failure, such as
+        // a read-only file system, is the caller's answer.
+        if (result >= 0 || errno != EEXIST)
+        {
+            break;
+        }
+    }
+
+    if (result < 0)
+    {
+        int error = errno;
+        memcpy(placeholder, "XXXXXX", 6);
+        errno = error;
+    }
 #else
 #error "Cannot find mkstemps nor mkstemp on this platform"
 #endif
