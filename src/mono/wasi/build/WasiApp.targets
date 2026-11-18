@@ -290,6 +290,13 @@
                 BundleRegistrationFunctionName="mono_register_assemblies_bundle"
                 BundleFile="wasi_bundled_assemblies.o" />
 
+      <!-- The emitter registers a satellite assembly under its culture's directory. -->
+      <_WasmBundleItem
+                Include="@(_WasmSatelliteAssemblies)"
+                Culture="%(_WasmSatelliteAssemblies.CultureName)"
+                BundleRegistrationFunctionName="mono_register_assemblies_bundle"
+                BundleFile="wasi_bundled_assemblies.o" />
+
       <!-- FIXME: always included? -->
       <_WasmBundleItem
                 Include="$(MicrosoftNetCoreAppRuntimePackRidNativeDir)icudt.dat"
@@ -301,6 +308,9 @@
                 Include="$(_ParsedRuntimeConfigFilePath)"
                 BundleRegistrationFunctionName="mono_register_runtimeconfig_bin"
                 BundleFile="wasi_bundled_runtimeconfig_bin.o" />
+
+      <!-- The bundle objects are compiled with the SDK's compiler configuration against its headers. -->
+      <_WasmBundleObjectInput Include="$([System.IO.Path]::GetDirectoryName('$(WasmClang)'))/*.cfg;$(WASI_SDK_PATH)/share/wasi-sysroot/include/**/*.h;$(WASI_SDK_PATH)/lib/clang/**/include/**/*.h" />
     </ItemGroup>
 
     <Error Text="Could not find NativeFileReference %(NativeFileReference.Identity)" Condition="'%(NativeFileReference.Identity)' != '' and !Exists(%(NativeFileReference.Identity))" />
