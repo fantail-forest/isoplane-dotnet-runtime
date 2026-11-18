@@ -18,6 +18,9 @@
     <_WasiCompileRspPath>$(NativeBinDir)src\wasi-compile.rsp</_WasiCompileRspPath>
     <_WasiLinkRspPath>$(NativeBinDir)src\wasi-link.rsp</_WasiLinkRspPath>
     <WasmNativeStrip Condition="'$(ContinuousIntegrationBuild)' == 'true'">false</WasmNativeStrip>
+    <!-- dotnet.wasm is the runtime linked with upstream's own driver. A consumer that links
+         every module itself from the pack's archives and sources can leave it out. -->
+    <WasiBuildStockRuntime Condition="'$(WasiBuildStockRuntime)' == ''">true</WasiBuildStockRuntime>
     <WASI_SDK_PATH Condition="'$(WASI_SDK_PATH)' == '' or !Exists('$(WASI_SDK_PATH)/WASI-SDK-VERSION-29.0')">$([MSBuild]::NormalizeDirectory($(MSBuildThisFileDirectory), 'wasi-sdk'))</WASI_SDK_PATH>
     <WASI_SDK_PATH>$([MSBuild]::EnsureTrailingSlash('$(WASI_SDK_PATH)').Replace('\', '/'))</WASI_SDK_PATH>
     <WasiClang>$(WASI_SDK_PATH)bin/clang</WasiClang>
@@ -288,8 +291,9 @@
           DestinationFolder="$(NativeBinDir)"
           SkipUnchangedFiles="true" />
 
+    <!-- Configuring writes wasm-config.h, which the pack carries with or without dotnet.wasm. -->
     <Exec Command="$(CMakeBuildRuntimeConfigureCmd)" WorkingDirectory="$(NativeBinDir)" />
-    <Exec Command="$(CMakeBuildRuntimeCmd)"  WorkingDirectory="$(NativeBinDir)" />
+    <Exec Command="$(CMakeBuildRuntimeCmd)"  WorkingDirectory="$(NativeBinDir)" Condition="'$(WasiBuildStockRuntime)' == 'true'" />
 
     <ItemGroup>
       <IcuDataFiles Include="$(NativeBinDir)*.dat" />
@@ -300,7 +304,8 @@
 
     <Copy SourceFiles="$(NativeBinDir)dotnet.wasm;"
           DestinationFolder="$(MicrosoftNetCoreAppRuntimePackNativeDir)"
-          SkipUnchangedFiles="true" />
+          SkipUnchangedFiles="true"
+          Condition="'$(WasiBuildStockRuntime)' == 'true'" />
 
     <Copy SourceFiles="@(IcuDataFiles);@(ICULibNativeFiles);@(_WasmArchivedTimezones);@(WASIComponentImports);"
           DestinationFolder="$(MicrosoftNetCoreAppRuntimePackNativeDir)"

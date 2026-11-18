@@ -90,6 +90,12 @@ build_runtime() {
   fi
 }
 
+# The feed carries the Mono runtime pack and the Wasi SDK pack. Isoplane links
+# its own runtime modules from the runtime pack, so the build leaves out the
+# out-of-band libraries, the test hosts, the installers, the workload
+# manifests and the dotnet.wasm that upstream links with its own driver.
+RUNTIME_SUBSETS=mono.runtime+mono.corelib+mono.wasiruntime+mono.packages+libs.native+libs.sfx+packs.product
+
 stage_runtime() {
   echo "==> runtime (log: $LOGS/runtime-build.log)"
   require_build_inputs
@@ -103,11 +109,12 @@ stage_runtime() {
     fi
     cd "$RUNTIME"
     DOTNET_CLI_USE_MSBUILD_SERVER=0 \
-    build_runtime -os wasi -subset mono+libs+packs -c Release -bl \
+    build_runtime -os wasi -subset "$RUNTIME_SUBSETS" -c Release -bl \
       /nodeReuse:false /p:UseSharedCompilation=false \
       /p:OfficialBuild=true "/p:OfficialBuildId=$PACK_BUILD_ID" \
       "/p:PatchVersion=$PACK_PATCH" "/p:VersionSuffix=$PACK_VERSION_SUFFIX" \
       /p:WasmNativeStrip=false \
+      /p:WasiBuildStockRuntime=false \
       /p:EnableSourceLink=false \
       "/p:WasiOpenSslLibDir=$OUT/openssl/lib" \
       "/p:_IcuDir=$ICU_MONO_NATIVE" "/p:ICULibDir=$ICU_MONO_NATIVE/lib" \
