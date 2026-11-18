@@ -1390,6 +1390,14 @@ int32_t SystemNative_SetLingerOption(intptr_t socket, LingerOption* option)
 
     return err == 0 ? Error_SUCCESS : SystemNative_ConvertErrorPlatformToPal(errno);
 #else // LINGER_OPTION_NAME
+#if defined(TARGET_WASI)
+    // Isoplane's host closes a socket without lingering and never with a
+    // reset, so disabled linger is the state every socket is already in.
+    if (option->OnOff == 0)
+    {
+        return Error_SUCCESS;
+    }
+#endif // TARGET_WASI
     return Error_ENOTSUP;
 #endif // LINGER_OPTION_NAME
 }
