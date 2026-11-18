@@ -110,7 +110,7 @@ stage_runtime() {
     cd "$RUNTIME"
     DOTNET_CLI_USE_MSBUILD_SERVER=0 \
     build_runtime -os wasi -subset "$RUNTIME_SUBSETS" -c Release -bl \
-      /nodeReuse:false /p:UseSharedCompilation=false \
+      /nodeReuse:false \
       /p:OfficialBuild=true "/p:OfficialBuildId=$PACK_BUILD_ID" \
       "/p:PatchVersion=$PACK_PATCH" "/p:VersionSuffix=$PACK_VERSION_SUFFIX" \
       /p:WasmNativeStrip=false \
