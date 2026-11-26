@@ -201,6 +201,7 @@
       <WasmLinkOptimizationFlag>$(WasiClangLinkOptimizationFlag)</WasmLinkOptimizationFlag>
 
       <_WasmCompileRsp>$(_WasmIntermediateOutputPath)wasi-compile.rsp</_WasmCompileRsp>
+      <_WasiNativeSourceCompileRsp>$(_WasmIntermediateOutputPath)wasi-compile-native-source.rsp</_WasiNativeSourceCompileRsp>
       <_WasmCompileOutputMessageImportance Condition="'$(WasiClangVerbose)' == 'true'">Normal</_WasmCompileOutputMessageImportance>
       <_WasmCompileOutputMessageImportance Condition="'$(WasiClangVerbose)' != 'true'">Low</_WasmCompileOutputMessageImportance>
 
@@ -265,6 +266,9 @@
 
       <_WasiClangLDFlags Include="$(WasiClangLinkOptimizationFlag)" />
       <_WasiClangLDFlags Include="@(_WasiClangCommonFlags)" />
+
+      <_WasiNativeSourceCompileFlags Include="@(_WasiClangCommonFlags)" />
+      <_WasiNativeSourceCompileFlags Include="$(WasiNativeSourceCompileFlags)" />
     </ItemGroup>
 
     <ItemGroup>
@@ -282,6 +286,10 @@
       <_WasmRuntimePackSrcFile Include="$(_WasmRuntimePackSrcDir)synthetic-pthread.c" />
 
       <_WasmRuntimePackSrcFile ObjectFile="$(_WasmIntermediateOutputPath)%(FileName).o" />
+
+      <_WasmNativeSourceFile Include="@(WasiNativeSource)"
+                             ObjectFile="$(_WasmIntermediateOutputPath)native-source/%(FileName).o"
+                             CompileRsp="$(_WasiNativeSourceCompileRsp)" />
     </ItemGroup>
 
     <ItemGroup Condition="'$(WasmSingleFileBundle)' == 'true'">
@@ -321,7 +329,10 @@
     <ItemGroup>
       <_WasmCFlags Include="@(_WasiClangCFlags)" />
       <_WasmCFlags Include="$(WasiClangExtraCFlags)" />
+      <FileWrites Include="$(_WasiNativeSourceCompileRsp)" Condition="'@(_WasmNativeSourceFile)' != ''" />
     </ItemGroup>
+    <WriteLinesToFile Lines="@(_WasiNativeSourceCompileFlags)" File="$(_WasiNativeSourceCompileRsp)" Overwrite="true" WriteOnlyWhenDifferent="true" Condition="'@(_WasmNativeSourceFile)' != ''" />
+    <MakeDir Directories="$(_WasmIntermediateOutputPath)native-source" Condition="'@(_WasmNativeSourceFile)' != ''" />
   </Target>
 
   <!-- FIXME: merge with some other target -->
