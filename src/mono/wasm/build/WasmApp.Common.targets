@@ -93,6 +93,8 @@
                                               - AppBundle/_content contains web files from nuget packages (css, js, etc)
       - $(WasmStripILAfterAOT)              - Set to true to enable trimming away AOT compiled methods body (IL code)
                                               Defaults to true.
+      - $(WasiNativeSourceCompileFlags)     - wasi: compiler flags for @(WasiNativeSource), such as an optimization level.
+                                              Defaults to none.
 
       Public items:
       - @(WasmExtraFilesToDeploy) - Files to copy to $(WasmAppDir).
@@ -115,6 +117,11 @@
       - @(WasmPInvokeModule)         - Extra module names whose P/Invokes get entries in the generated P/Invoke table.
       - @(WasmGenerationKey)         - Values naming build inputs that are not files, such as a package digest.
                                        A changed value regenerates the bundle objects and the managed-to-native tables.
+      - @(WasiNativeSource)          - wasi: C sources compiled and linked into the module. Each compiles with the
+                                       link's target and sysroot, the pack's include directories and
+                                       $(WasiNativeSourceCompileFlags). %(Dependencies) lists the files it includes;
+                                       a newer one recompiles it. Its object is named after its file name, so two
+                                       sources with one file name overwrite each other's object.
   -->
 
   <UsingTask TaskName="Microsoft.WebAssembly.Build.Tasks.WasmLoadAssembliesAndReferences" AssemblyFile="$(WasmAppBuilderTasksAssemblyPath)" TaskFactory="TaskHostFactory" />
@@ -885,18 +892,23 @@
            Text="$(_ToolchainMissingErrorMessage) SDK is required for building native files." />
 
     <ItemGroup>
-      <_WasmSourceFileToCompile Remove="@(_WasmSourceFileToCompile)" />
-      <_WasmSourceFileToCompile Include="@(_WasmRuntimePackSrcFile)" Dependencies="%(_WasmRuntimePackSrcFile.Dependencies);$(_WasmDefaultFlagsRsp);$(_WasmCompileRsp)" />
-
       <_WasmCompileArguments Remove="@(_WasmCompileArguments)" />
       <_WasmCompileArguments Include="&quot;@$(_WasmDefaultFlagsRsp)&quot;" Condition="'$(_WasmDefaultFlagsRsp)' != ''" />
       <_WasmCompileArguments Include="$(_EmccDefaultFlags)" Condition="'$(_EmccDefaultFlags)' != ''" />
       <_WasmCompileArguments Include="&quot;@$(_WasmCompileRsp)&quot;" Condition="'$(_WasmCompileRsp)' != ''" />
+
+      <_WasmSourceFileToCompile Remove="@(_WasmSourceFileToCompile)" />
+      <_WasmSourceFileToCompile Include="@(_WasmRuntimePackSrcFile)"
+                                Dependencies="%(_WasmRuntimePackSrcFile.Dependencies);$(_WasmDefaultFlagsRsp);$(_WasmCompileRsp)"
+                                CompileArguments="@(_WasmCompileArguments, ' ')" />
+      <_WasmSourceFileToCompile Include="@(_WasmNativeSourceFile)"
+                                Dependencies="%(_WasmNativeSourceFile.Dependencies);$(_WasmDefaultFlagsRsp);$(_WasmCompileRsp);%(_WasmNativeSourceFile.CompileRsp)"
+                                CompileArguments="@(_WasmCompileArguments, ' ') &quot;@%(_WasmNativeSourceFile.CompileRsp)&quot;" />
     </ItemGroup>
 
     <EmccCompile
           SourceFiles="@(_WasmSourceFileToCompile)"
-          Arguments="@(_WasmCompileArguments, ' ')"
+          Arguments="%(_WasmSourceFileToCompile.CompileArguments)"
           CompilerBinaryPath="$(WasmClang)"
           EnvironmentVariables="@(WasmToolchainEnvVars)"
           DisableParallelCompile="$(DisableParallelEmccCompile)"
