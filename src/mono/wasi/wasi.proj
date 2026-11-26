@@ -265,6 +265,7 @@
       <_FilesToCopy Include="$(BrowserProjectRoot)runtime\gc-common.h"               DestinationFolder="$(NativeBinDir)include\wasm" />
       <_FilesToCopy Include="$(BrowserProjectRoot)runtime\runtime.h"                 DestinationFolder="$(NativeBinDir)include\wasm" />
       <_FilesToCopy Include="$(BrowserProjectRoot)runtime\pinvoke.h"                 DestinationFolder="$(NativeBinDir)include\wasm" />
+      <_FilesToCopy Include="$(RepoRoot)src\native\libs\System.Native\pal_isoplane_sockets.h" DestinationFolder="$(NativeBinDir)include" />
     </ItemGroup>
 
     <Copy SourceFiles="$(PInvokeTableFile)"
@@ -300,6 +301,7 @@
       <WasmSrcFiles Include="$(NativeBinDir)src\*.c;" />
       <WasmSrcFiles Include="$(_WasiDefaultsRspPath);$(_WasiCompileRspPath);$(_WasiLinkRspPath);$(NativeBinDir)src\wasm-props.json" />
       <WasmHeaderFiles Include="$(NativeBinDir)include\wasm\*.h" />
+      <WasiHeaderFiles Include="$(NativeBinDir)include\*.h" />
     </ItemGroup>
 
     <Copy SourceFiles="$(NativeBinDir)dotnet.wasm;"
@@ -317,6 +319,10 @@
 
     <Copy SourceFiles="@(WasmHeaderFiles)"
           DestinationFolder="$(MicrosoftNetCoreAppRuntimePackNativeDir)include\wasm"
+          SkipUnchangedFiles="true" />
+
+    <Copy SourceFiles="@(WasiHeaderFiles)"
+          DestinationFolder="$(MicrosoftNetCoreAppRuntimePackNativeDir)include"
           SkipUnchangedFiles="true" />
   </Target>
 </Project>
